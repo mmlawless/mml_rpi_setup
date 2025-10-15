@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail  # Exit on error, undefined vars, pipe failures
+#set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 ############################################################
 # --- Self-heal CRLF and support curl | bash execution ---
