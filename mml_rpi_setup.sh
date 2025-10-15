@@ -1,16 +1,21 @@
 #!/bin/bash
-
-# Raspberry Pi Initial Setup Script
-# Run with: bash setup_pi.sh
-
 set -e  # Exit on any error
+
+# --- Self-heal Windows CRLF line endings and re-exec ---
+if grep -q $'\r' "$0"; then
+  echo "[INFO] Converting CRLF -> LF and re-running…"
+  tmp="$(mktemp)"
+  tr -d '\r' < "$0" > "$tmp"
+  chmod +x "$tmp"
+  exec /bin/bash "$tmp" "$@"
+fi
 
 echo "=========================================="
 echo "Raspberry Pi Initial Setup Script 151025"
 echo "=========================================="
 
 # Ensure locales exist (idempotent)
-if ! locale -a 2>/dev/null | grep -q '^en_GB\.utf8$'; then
+if ! locale -a 2>/dev/null | grep -qi '^en_GB\.utf8$'; then
   sudo apt-get update
   sudo apt-get install -y locales
   sudo sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
@@ -18,6 +23,7 @@ if ! locale -a 2>/dev/null | grep -q '^en_GB\.utf8$'; then
   sudo update-locale LANG=en_GB.UTF-8
 fi
 export LANG=en_GB.UTF-8
+export LC_ALL=en_GB.UTF-8
 
 # Colors for output
 RED='\033[0;31m'
@@ -26,26 +32,13 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Function to check if command exists
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
+command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 # Update system packages
 log_info "Updating package lists..."
@@ -74,14 +67,13 @@ sudo apt install -y \
   lsb-release \
   net-tools
 
-
 # Enable SSH (if not already enabled)
 log_info "Enabling SSH service..."
 sudo systemctl enable --now ssh
 
 # Configure Git (optional - you can customize these)
 read -p "Would you like to configure Git? (y/n): " configure_git
-if [[ $configure_git == "y" || $configure_git == "Y" ]]; then
+if [[ "$configure_git" =~ ^[Yy]$ ]]; then
     read -p "Enter your Git username: " git_username
     read -p "Enter your Git email: " git_email
     git config --global user.name "$git_username"
@@ -96,26 +88,26 @@ log_success "Filesystem expansion configured (will take effect after reboot)"
 
 # Configure memory split for GPU (useful for camera/display work)
 read -p "Would you like to allocate more memory to GPU? (useful for camera/display work) (y/n): " configure_gpu
-if [[ $configure_gpu == "y" || $configure_gpu == "Y" ]]; then
+if [[ "$configure_gpu" =~ ^[Yy]$ ]]; then
     echo "gpu_mem=128" | sudo tee -a /boot/config.txt
     log_success "GPU memory set to 128MB (requires reboot)"
 fi
 
 # Enable interfaces individually
 read -p "Would you like to enable I2C interface? (y/n): " enable_i2c
-if [[ $enable_i2c == "y" || $enable_i2c == "Y" ]]; then
+if [[ "$enable_i2c" =~ ^[Yy]$ ]]; then
     sudo raspi-config nonint do_i2c 0
     log_success "I2C interface enabled"
 fi
 
 read -p "Would you like to enable SPI interface? (y/n): " enable_spi
-if [[ $enable_spi == "y" || $enable_spi == "Y" ]]; then
+if [[ "$enable_spi" =~ ^[Yy]$ ]]; then
     sudo raspi-config nonint do_spi 0
     log_success "SPI interface enabled"
 fi
 
 read -p "Would you like to enable Camera interface? (y/n): " enable_camera
-if [[ $enable_camera == "y" || $enable_camera == "Y" ]]; then
+if [[ "$enable_camera" =~ ^[Yy]$ ]]; then
     sudo raspi-config nonint do_camera 0
     log_success "Camera interface enabled"
 fi
@@ -133,9 +125,7 @@ pip3 install --user \
 
 # Create useful directories
 log_info "Creating useful directories..."
-mkdir -p ~/projects
-mkdir -p ~/scripts
-mkdir -p ~/backup
+mkdir -p ~/projects ~/scripts ~/backup
 
 # Set up aliases and bash improvements
 log_info "Setting up useful aliases..."
@@ -181,7 +171,6 @@ echo "Disk Usage: $(df -h / | awk '/\// {print $3 "/" $2 " (" $5 ")"}')"
 echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
 echo "IP Address: $(hostname -I | awk '{print $1}')"
 EOF
-
 chmod +x ~/scripts/sysinfo.sh
 
 # Clean up
@@ -204,7 +193,7 @@ echo "• Python packages for Pi projects installed"
 echo "• Useful directories created (~/projects, ~/scripts, ~/backup)"
 echo "• Bash aliases and improvements added"
 echo "• System info script created (~/scripts/sysinfo.sh)"
-if [[ $configure_gpu == "y" || $configure_gpu == "Y" ]]; then
+if [[ "$configure_gpu" =~ ^[Yy]$ ]]; then
     echo "• GPU memory allocation configured"
 fi
 echo ""
@@ -214,4 +203,3 @@ echo "• Run system info: ~/scripts/sysinfo.sh"
 echo "• Check your IP: hostname -I"
 echo ""
 log_warning "A reboot is required to complete the setup (especially for filesystem expansion and interface changes)."
-
