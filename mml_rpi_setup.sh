@@ -44,26 +44,26 @@ sudo apt update
 log_info "Upgrading installed packages..."
 sudo apt upgrade -y
 
-# Install essential packages
 log_info "Installing essential packages..."
 sudo apt install -y \
-    curl \
-    wget \
-    git \
-    vim \
-    htop \
-    tree \
-    unzip \
-    build-essential \
-    python3-pip \
-    python3-venv \
-    nodejs \
-    npm \
-    software-properties-common \
-    apt-transport-https \
-    ca-certificates \
-    gnupg \
-    lsb-release
+  curl \
+  wget \
+  git \
+  vim \
+  htop \
+  tree \
+  unzip \
+  build-essential \
+  python3-pip \
+  python3-venv \
+  nodejs \
+  npm \
+  apt \
+  ca-certificates \
+  gnupg \
+  lsb-release \
+  net-tools
+
 
 # Enable SSH (if not already enabled)
 log_info "Enabling SSH service..."
