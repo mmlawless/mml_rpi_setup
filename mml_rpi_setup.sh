@@ -6,7 +6,7 @@
 set -e  # Exit on any error
 
 echo "=========================================="
-echo "Raspberry Pi Initial Setup Script"
+echo "Raspberry Pi Initial Setup Script 151025"
 echo "=========================================="
 
 # Colors for output
