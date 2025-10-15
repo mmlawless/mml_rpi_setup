@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e  # Exit on any error
+
 
 ############################################################
 # --- Self-heal CRLF and support curl | bash execution ---
