@@ -7,4 +7,4 @@ Quick setup scripts for fresh Raspberry Pi installations.
 ## Usage
 ```bash
 # Run the main setup script
-curl -fsSL https://raw.githubusercontent.com/yourusername/raspberry-pi-setup/main/setup_pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mmlawless/raspberry-pi-setup/main/setup_pi.sh | bash
