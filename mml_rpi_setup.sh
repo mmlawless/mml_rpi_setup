@@ -2,7 +2,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 ############################################################
-# --- Self-heal CRLF and support curl | bash execution B ---
+# --- Self-heal CRLF and support curl | bash execution C ---
 ############################################################
 fix_and_reexec() {
   local tmp
