@@ -2,7 +2,7 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 ############################################################
-# --- Self-heal CRLF and support curl | bash execution A ---
+# --- Self-heal CRLF and support curl | bash execution B ---
 ############################################################
 fix_and_reexec() {
   local tmp
@@ -309,15 +309,15 @@ echo "=========================================="
 log_success "Raspberry Pi setup completed successfully!"
 echo "=========================================="
 echo "Summary:"
-echo "✓ System packages updated and upgraded"
-echo "✓ Filesystem expanded"
-echo "✓ Essential development tools installed"
-echo "✓ Basic firewall (UFW) configured"
-echo "✓ SSH enabled"
-echo "✓ Python packages installed"
-echo "✓ Directories created: ~/projects, ~/scripts, ~/backup"
-echo "✓ Bash aliases added"
-echo "✓ System info script: ~/scripts/sysinfo.sh"
+echo "* System packages updated and upgraded"
+echo "* Filesystem expanded"
+echo "* Essential development tools installed"
+echo "* Basic firewall (UFW) configured"
+echo "* SSH enabled"
+echo "* Python packages installed"
+echo "* Directories created: ~/projects, ~/scripts, ~/backup"
+echo "* Bash aliases added"
+echo "* System info script: ~/scripts/sysinfo.sh"
 echo ""
 log_warning "IMPORTANT: Reboot required to finalize all changes"
 echo ""
