@@ -9,6 +9,16 @@ echo "=========================================="
 echo "Raspberry Pi Initial Setup Script 151025"
 echo "=========================================="
 
+# Ensure locales exist (idempotent)
+if ! locale -a 2>/dev/null | grep -q '^en_GB\.utf8$'; then
+  sudo apt-get update
+  sudo apt-get install -y locales
+  sudo sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
+  sudo locale-gen
+  sudo update-locale LANG=en_GB.UTF-8
+fi
+export LANG=en_GB.UTF-8
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -67,8 +77,7 @@ sudo apt install -y \
 
 # Enable SSH (if not already enabled)
 log_info "Enabling SSH service..."
-sudo systemctl enable ssh
-sudo systemctl start ssh
+sudo systemctl enable --now ssh
 
 # Configure Git (optional - you can customize these)
 read -p "Would you like to configure Git? (y/n): " configure_git
