@@ -1,14 +1,29 @@
 #!/bin/bash
 set -e  # Exit on any error
 
-# --- Self-heal Windows CRLF line endings and re-exec ---
-if grep -q $'\r' "$0"; then
-  echo "[INFO] Converting CRLF -> LF and re-running…"
+# --- Self-heal CRLF regardless of how the script is invoked (file or stdin) ---
+fix_and_reexec_from_file() {
   tmp="$(mktemp)"
-  tr -d '\r' < "$0" > "$tmp"
+  tr -d '\r' < "$1" > "$tmp"
   chmod +x "$tmp"
   exec /bin/bash "$tmp" "$@"
+}
+# If this script is a real file (BASH_SOURCE set) and contains CRLF, fix+reexec
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -r "${BASH_SOURCE[0]}" ] && grep -q $'\r' "${BASH_SOURCE[0]}"; then
+  echo "[INFO] Converting CRLF -> LF (file) and re-running…"
+  fix_and_reexec_from_file "${BASH_SOURCE[0]}" "$@"
 fi
+# If coming from a pipe (no readable BASH_SOURCE) and stdin has CRLF, fix+reexec
+if [ ! -r "${BASH_SOURCE[0]:-}" ] && ! [ -t 0 ]; then
+  head -c 1 /proc/$$/fd/0 | grep -q . || true  # ensure fd0 is open
+  if grep -q $'\r' /proc/$$/fd/0 2>/dev/null; then
+    echo "[INFO] Converting CRLF -> LF (stdin) and re-running…"
+    tmp_in="$(mktemp)"
+    cat - > "$tmp_in"
+    fix_and_reexec_from_file "$tmp_in" "$@"
+  fi
+fi
+# --- end CRLF self-heal ---
 
 echo "=========================================="
 echo "Raspberry Pi Initial Setup Script 151025"
