@@ -178,21 +178,31 @@ fi
 ############################################################
 # Optional Email (msmtp) setup
 ############################################################
-if prompt_yn "Would you like to configure email (msmtp)? (y/n): " n; then
-  log_info "Installing msmtp..."
-  sudo apt-get install -y msmtp msmtp-mta
-  
-  if [ $? -eq 0 ]; then
-    email_address=$(read_tty "Enter your Gmail address: ")
+if [ -f ~/.msmtprc ]; then
+  log_info "Email (msmtp) already configured"
+  if prompt_yn "Would you like to reconfigure email? (y/n): " n; then
+    rm ~/.msmtprc
+  else
+    log_info "Skipping email configuration"
+  fi
+fi
+
+if [ ! -f ~/.msmtprc ]; then
+  if prompt_yn "Would you like to configure email (msmtp)? (y/n): " n; then
+    log_info "Installing msmtp..."
+    sudo apt-get install -y msmtp msmtp-mta
     
-    if [ -n "$email_address" ]; then
-      log_warning "You need a Gmail App Password (not your regular password)"
-      log_info "Create one at: https://myaccount.google.com/apppasswords"
-      app_password=$(read_tty "Enter your Gmail App Password (16 characters, no spaces): ")
+    if [ $? -eq 0 ]; then
+      email_address=$(read_tty "Enter your Gmail address: ")
       
-      if [ -n "$app_password" ]; then
-        # Create msmtp configuration
-        cat > ~/.msmtprc <<EOF
+      if [ -n "$email_address" ]; then
+        log_warning "You need a Gmail App Password (not your regular password)"
+        log_info "Create one at: https://myaccount.google.com/apppasswords"
+        app_password=$(read_tty "Enter your Gmail App Password (16 characters, no spaces): ")
+        
+        if [ -n "$app_password" ]; then
+          # Create msmtp configuration
+          cat > ~/.msmtprc <<EOF
 defaults
 auth           on
 tls            on
