@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ############################################################
-# Self-heal CRLF and support curl | bash execution D
+# Self-heal CRLF and support curl | bash execution
 ############################################################
 fix_and_reexec() {
   local tmp
@@ -176,6 +176,63 @@ if prompt_yn "Would you like to configure Git? (y/n): " n; then
 fi
 
 ############################################################
+# Optional Email (msmtp) setup
+############################################################
+if prompt_yn "Would you like to configure email (msmtp)? (y/n): " n; then
+  log_info "Installing msmtp..."
+  sudo apt-get install -y msmtp msmtp-mta
+  
+  if [ $? -eq 0 ]; then
+    email_address=$(read_tty "Enter your Gmail address: ")
+    
+    if [ -n "$email_address" ]; then
+      log_warning "You need a Gmail App Password (not your regular password)"
+      log_info "Create one at: https://myaccount.google.com/apppasswords"
+      app_password=$(read_tty "Enter your Gmail App Password (16 characters, no spaces): ")
+      
+      if [ -n "$app_password" ]; then
+        # Create msmtp configuration
+        cat > ~/.msmtprc <<EOF
+defaults
+auth           on
+tls            on
+tls_starttls   on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        ~/.msmtp.log
+
+account        gmail
+host           smtp.gmail.com
+port           587
+from           ${email_address}
+user           ${email_address}
+password       ${app_password}
+
+account default : gmail
+EOF
+        
+        chmod 600 ~/.msmtprc
+        
+        # Test the configuration
+        log_info "Testing email configuration..."
+        if echo "Test email from Raspberry Pi $(hostname)" | msmtp "$email_address" 2>/dev/null; then
+          log_success "Email configured and tested successfully!"
+          log_info "Check your inbox (or spam folder) for the test email"
+        else
+          log_warning "Email configured but test failed - check ~/.msmtp.log for details"
+          log_info "You can test manually with: echo 'test' | msmtp $email_address"
+        fi
+      else
+        log_warning "Email configuration skipped (no app password provided)"
+      fi
+    else
+      log_warning "Email configuration skipped (no email address provided)"
+    fi
+  else
+    log_error "Failed to install msmtp"
+  fi
+fi
+
+############################################################
 # Filesystem & interfaces
 ############################################################
 if command -v raspi-config &> /dev/null; then
@@ -326,6 +383,9 @@ echo "  - Python packages installed"
 echo "  - Directories created: ~/projects, ~/scripts, ~/backup"
 echo "  - Bash aliases added"
 echo "  - System info script: ~/scripts/sysinfo.sh"
+if [ -f ~/.msmtprc ]; then
+  echo "  - Email (msmtp) configured"
+fi
 echo ""
 log_warning "IMPORTANT: Reboot required to finalize all changes"
 echo ""
