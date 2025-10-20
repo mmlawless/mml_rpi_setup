@@ -12,3 +12,9 @@ curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rp
 curl -fsSLO https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh
 chmod +x mml_rpi_setup.sh
 ./mml_rpi_setup.sh --force
+
+
+
+
+
+curl -sSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh | bash -s -- --force </dev/tty
