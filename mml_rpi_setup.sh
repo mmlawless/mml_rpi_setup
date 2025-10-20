@@ -777,9 +777,9 @@ logfile        ~/.msmtp.log
 account        gmail
 host           smtp.gmail.com
 port           587
-from           $mmlawlessuk@gmail.com
-user           $mmlawlessuk@gmail.com
-password       $imdcjodjdezgsvqb
+from           ${email_address}
+user           ${email_address}
+password       ${app_password}
 
 account default : gmail
 EOF
