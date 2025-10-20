@@ -154,7 +154,7 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 
-# --- Network helpers (static IP selection with conflict check) ---
+# --- Network helpers (updated) ---
 
 nm_available() { command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager 2>/dev/null; }
 
@@ -163,7 +163,10 @@ get_default_iface() {
 }
 
 list_ipv4_ifaces() {
-  ip -o -4 addr show | awk '{print $2}' | sort -u
+  ip -o -4 addr show \
+    | awk '{print $2}' \
+    | sort -u \
+    | grep -v '^lo$'
 }
 
 iface_current_cidr() {
@@ -176,11 +179,8 @@ iface_current_gw() {
 }
 
 is_ip_in_use() {
-  # $1=ip, $2=iface (optional)
   local ip="$1" ifc="${2:-}"
-  # quick ping check
   ping -c1 -W1 "$ip" >/dev/null 2>&1 && return 0
-  # more robust ARP probe if available
   if command -v arping >/dev/null 2>&1; then
     if [ -n "$ifc" ]; then
       sudo arping -D -c 2 -w 2 -I "$ifc" "$ip" >/dev/null 2>&1 && return 0
@@ -194,9 +194,11 @@ is_ip_in_use() {
 write_dhcpcd_static() {
   local ifc="$1" cidr="$2" gw="$3" dns="$4"
   local conf="/etc/dhcpcd.conf"
-  local tmp="$(mktemp)"
-  # remove previous managed block
-  if [ -r "$conf" ]; then
+  local tmp
+  tmp=$(sudo mktemp /tmp/dhcpcd.conf.mml.XXXXXX)
+
+  # Remove our managed block into a root-owned temp, then append ours
+  if sudo test -r "$conf"; then
     sudo awk '
       BEGIN{skip=0}
       /# >>> mml_rpi_setup static/ {skip=1; next}
@@ -204,27 +206,28 @@ write_dhcpcd_static() {
       skip==0 {print}
     ' "$conf" | sudo tee "$tmp" >/dev/null
   else
-    : > "$tmp"
+    : | sudo tee "$tmp" >/dev/null
   fi
 
-  {
-    cat "$tmp"
-    echo "# >>> mml_rpi_setup static"
-    echo "interface $ifc"
-    echo "static ip_address=$cidr"
-    echo "static routers=$gw"
-    echo "static domain_name_servers=$dns"
-    echo "# <<< mml_rpi_setup static"
-  } | sudo tee "$conf" >/dev/null
-  rm -f "$tmp"
+  sudo bash -c "cat >> '$tmp' <<'EOF'
+# >>> mml_rpi_setup static
+interface $ifc
+static ip_address=$cidr
+static routers=$gw
+static domain_name_servers=$dns
+# <<< mml_rpi_setup static
+EOF"
 
+  # Atomic replace
+  sudo mv "$tmp" "$conf"
   sudo systemctl restart dhcpcd || true
 }
 
 remove_dhcpcd_static() {
   local conf="/etc/dhcpcd.conf"
-  [ -r "$conf" ] || return 0
-  local tmp="$(mktemp)"
+  sudo test -r "$conf" || return 0
+  local tmp
+  tmp=$(sudo mktemp /tmp/dhcpcd.conf.mml.XXXXXX)
   sudo awk '
     BEGIN{skip=0}
     /# >>> mml_rpi_setup static/ {skip=1; next}
@@ -252,82 +255,6 @@ configure_dhcp_nm() {
   sudo nmcli con mod "$conn" ipv4.method auto ipv6.method ignore
   sudo nmcli con up "$conn" || sudo nmcli dev reapply "$ifc" || true
 }
-
-configure_network() {
-  # Ask if user wants static IP
-  if ! prompt_yn "Would you like to set a static IPv4 address? (y/n): " n; then
-    log_info "Keeping DHCP configuration"
-    return
-  fi
-
-  # Interface selection
-  local default_ifc="$(get_default_iface)"
-  local ifaces=($(list_ipv4_ifaces))
-  local ifc="$default_ifc"
-  if [ ${#ifaces[@]} -gt 1 ]; then
-    echo "Available interfaces: ${ifaces[*]}"
-    local sel
-    sel=$(read_tty "Choose interface (default: $default_ifc): ")
-    ifc="${sel:-$default_ifc}"
-  fi
-  [ -z "$ifc" ] && { log_warning "No IPv4 interface found; skipping static IP setup."; return; }
-
-  # Derive sensible defaults from current config
-  local current_cidr="$(iface_current_cidr "$ifc")"   # e.g. 192.168.1.23/24
-  local current_gw="$(iface_current_gw)"
-  local def_dns="1.1.1.1 8.8.8.8"
-
-  # Prompt values
-  echo ""
-  log_info "Enter the static IP details for interface: $ifc"
-  log_info "Use CIDR notation (e.g. 192.168.1.50/24)"
-  local cidr_in gw_in dns_in
-  cidr_in=$(read_tty "Static IP (CIDR) [default: ${current_cidr%/*}/24 if unknown]: ")
-  if [ -z "$cidr_in" ]; then
-    if [[ "$current_cidr" =~ /[0-9]+$ ]]; then
-      cidr_in="${current_cidr%/*}/${current_cidr#*/}"
-    else
-      # fallback if we couldn't detect prefix
-      cidr_in="$(hostname -I | awk '{print $1}')/24"
-    fi
-  fi
-  gw_in=$(read_tty "Gateway [default: $current_gw]: ")
-  gw_in="${gw_in:-$current_gw}"
-  dns_in=$(read_tty "DNS servers space-separated [default: $def_dns]: ")
-  dns_in="${dns_in:-$def_dns}"
-
-  local ip_only="${cidr_in%%/*}"
-
-  # Conflict check
-  log_info "Checking if $ip_only is already in use on the network..."
-  if is_ip_in_use "$ip_only" "$ifc"; then
-    log_warning "Address $ip_only appears to be in use. Falling back to DHCP."
-    if nm_available; then
-      configure_dhcp_nm "$ifc"
-    else
-      remove_dhcpcd_static
-    fi
-    return
-  fi
-
-  # Apply configuration
-  if nm_available; then
-    log_info "Configuring static IP via NetworkManager..."
-    configure_static_nm "$ifc" "$cidr_in" "$gw_in" "$dns_in"
-  else
-    log_info "Configuring static IP via dhcpcd..."
-    write_dhcpcd_static "$ifc" "$cidr_in" "$gw_in" "$dns_in"
-  fi
-
-  # Verify we have the address
-  sleep 2
-  ip -4 addr show dev "$ifc" | grep -q "$ip_only" && \
-    log_success "Static IP $cidr_in set on $ifc" || \
-    log_warning "Could not verify static IP on $ifc. Network may need a reboot or replug."
-}
-
-
-
 
 ############################################################
 # Temperature monitoring
