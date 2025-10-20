@@ -35,7 +35,7 @@ fi
 # Locale setup (defensive)
 ############################################################
 setup_locale() {
-  # Use a safe temporary locale during setup to avoid perl/apt warnings
+  # Safe temporary locale while we install/generate to avoid apt/perl warnings
   export LC_ALL=C.UTF-8
   export LANG=C.UTF-8
 
@@ -48,12 +48,16 @@ setup_locale() {
     grep -q '^en_GB\.UTF-8 UTF-8' /etc/locale.gen || echo 'en_GB.UTF-8 UTF-8' | sudo tee -a /etc/locale.gen >/dev/null
   fi
 
+  # Generate
   sudo locale-gen en_GB.UTF-8
-  sudo update-locale LANG=en_GB.UTF-8 LC_ALL=en_GB.UTF-8
 
-  # Switch this shell to the final locale
+  # IMPORTANT: Do NOT set LC_ALL here; Debian's update-locale rejects it.
+  sudo sed -i '/^LC_ALL=/d' /etc/default/locale
+  sudo update-locale LANG=en_GB.UTF-8 LANGUAGE="en_GB:en"
+
+  # Switch this shell to final locale (no LC_ALL)
   export LANG=en_GB.UTF-8
-  export LC_ALL=en_GB.UTF-8
+  unset LC_ALL
 }
 
 ############################################################
