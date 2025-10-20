@@ -65,7 +65,7 @@ log_progress() { echo -e "${CYAN}[PROGRESS]${NC} $1"; }
 log_temp()     { echo -e "${MAGENTA}[TEMP]${NC} $1"; }
 
 IS_TTY=0
-[ -t 0 ] && IS_TTY=1
+{ [ -t 0 ] || [ -t 1 ] || [ -t 2 ] || [ -r /dev/tty ]; } && IS_TTY=1
 
 # Command line arguments
 NON_INTERACTIVE=0
@@ -742,31 +742,48 @@ if ! is_checkpoint_passed "GIT"; then
 fi
 
 ############################################################
-# Email setup
+# Email setup (secure with GPG + passwordeval)
 ############################################################
 if ! is_checkpoint_passed "EMAIL"; then
   if [ -f ~/.msmtprc ]; then
     log_info "Email (msmtp) already configured"
     if prompt_yn "Would you like to reconfigure email? (y/n): " n; then
-      rm ~/.msmtprc
+      rm -f ~/.msmtprc
+      rm -f ~/.secrets/msmtp.gpg
     fi
   fi
-  
+
   if [ ! -f ~/.msmtprc ]; then
     if prompt_yn "Would you like to configure email (msmtp)? (y/n): " n; then
-      log_info "Installing msmtp..."
-      sudo apt-get install -y msmtp msmtp-mta
-      
-      if [ $? -eq 0 ]; then
-        email_address=$(read_tty "Enter your Gmail address: ")
-        
-        if [ -n "$email_address" ]; then
-          log_warning "You need a Gmail App Password (not your regular password)"
-          log_info "Create one at: https://myaccount.google.com/apppasswords"
-          app_password=$(read_tty "Enter your Gmail App Password (16 characters, no spaces): ")
-          
-          if [ -n "$app_password" ]; then
-            cat > ~/.msmtprc <<EOF
+      log_info "Installing msmtp and gpg..."
+      sudo apt-get install -y msmtp msmtp-mta gpg
+
+      # Ensure secret dir exists
+      mkdir -p ~/.secrets
+      chmod 700 ~/.secrets
+
+      # Read Gmail address
+      email_address=$(read_tty "Enter your Gmail address: ")
+
+      if [ -n "$email_address" ]; then
+        log_warning "You need a Gmail App Password (not your regular password)"
+        log_info "Create one at: https://myaccount.google.com/apppasswords"
+
+        # Read app password securely (no echo)
+        printf "Enter your Gmail App Password (16 chars, no spaces): " > /dev/tty
+        stty -echo
+        read -r app_password < /dev/tty || app_password=""
+        stty echo
+        echo > /dev/tty
+
+        if [ -n "$app_password" ]; then
+          # Encrypt app password with GPG (symmetric AES256)
+          printf "%s" "$app_password" | gpg --symmetric --cipher-algo AES256 -o ~/.secrets/msmtp.gpg
+          chmod 600 ~/.secrets/msmtp.gpg
+          unset app_password
+
+          # Write msmtp config using passwordeval
+          cat > ~/.msmtprc <<EOF
 defaults
 auth           on
 tls            on
@@ -777,36 +794,33 @@ logfile        ~/.msmtp.log
 account        gmail
 host           smtp.gmail.com
 port           587
-from           ${email_address}
-user           ${email_address}
-password       ${app_password}
+from           $email_address
+user           $email_address
+passwordeval   "gpg --quiet --batch --decrypt ~/.secrets/msmtp.gpg"
 
 account default : gmail
 EOF
-            
-            chmod 600 ~/.msmtprc
-            
-            log_info "Testing email configuration..."
-            if echo "Test email from Raspberry Pi $(hostname)" | msmtp "$email_address" 2>/dev/null; then
-              log_success "Email configured and tested successfully!"
-              log_info "Check your inbox (or spam folder) for the test email"
-            else
-              log_warning "Email configured but test failed - check ~/.msmtp.log for details"
-              log_info "You can test manually with: echo 'test' | msmtp $email_address"
-            fi
+          chmod 600 ~/.msmtprc
+
+          log_info "Testing email configuration..."
+          if echo "Test email from Raspberry Pi $(hostname)" | msmtp "$email_address" 2>/dev/null; then
+            log_success "Email configured and tested successfully!"
+            log_info "Check your inbox (or spam folder) for the test email"
           else
-            log_warning "Email configuration skipped (no app password provided)"
+            log_warning "Email configured but test failed - check ~/.msmtp.log for details"
+            log_info "You can test manually with: echo 'test' | msmtp $email_address"
           fi
         else
-          log_warning "Email configuration skipped (no email address provided)"
+          log_warning "Email configuration skipped (no app password provided)"
         fi
       else
-        log_error "Failed to install msmtp"
+        log_warning "Email configuration skipped (no email address provided)"
       fi
     fi
   fi
   save_checkpoint "EMAIL"
 fi
+
 
 ############################################################
 # Raspi-config
