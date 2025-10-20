@@ -32,10 +32,10 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -r "${BASH_SOURCE[0]}" ]; then
 fi
 
 ############################################################
-# Locale setup (defensive)
+# Locale setup (defensive; do NOT persist LC_ALL)
 ############################################################
 setup_locale() {
-  # Safe temporary locale while we install/generate to avoid apt/perl warnings
+  # Use a safe temporary locale during install/generate to avoid apt/perl warnings
   export LC_ALL=C.UTF-8
   export LANG=C.UTF-8
 
@@ -48,10 +48,10 @@ setup_locale() {
     grep -q '^en_GB\.UTF-8 UTF-8' /etc/locale.gen || echo 'en_GB.UTF-8 UTF-8' | sudo tee -a /etc/locale.gen >/dev/null
   fi
 
-  # Generate
+  # Generate (on tiny RAM Pis this can be killed; swap boost later also helps)
   sudo locale-gen en_GB.UTF-8
 
-  # IMPORTANT: Do NOT set LC_ALL here; Debian's update-locale rejects it.
+  # Do NOT set LC_ALL in /etc/default/locale (Debian rejects it)
   sudo sed -i '/^LC_ALL=/d' /etc/default/locale
   sudo update-locale LANG=en_GB.UTF-8 LANGUAGE="en_GB:en"
 
@@ -78,7 +78,7 @@ log_error()    { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 log_progress() { echo -e "${CYAN}[PROGRESS]${NC} $1"; }
 log_temp()     { echo -e "${MAGENTA}[TEMP]${NC} $1"; }
 
-# Robust TTY detection (works with curl | bash if </dev/tty provided)
+# Robust TTY detection (works with curl | bash)
 IS_TTY=0
 { [ -t 0 ] || [ -t 1 ] || [ -t 2 ] || [ -r /dev/tty ]; } && IS_TTY=1
 
@@ -97,16 +97,14 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE_RERUN=1; shift ;;
     --help)
       echo "Usage: $0 [OPTIONS]"
-      echo "Options:"
-      echo "  --non-interactive       Run without prompts (use defaults)"
-      echo "  --tier TIER             MINIMAL/LOW/MEDIUM/HIGH"
-      echo "  --profile PROFILE       generic/web/iot/media/dev"
-      echo "  --force                 Force rerun"
-      echo "  --help                  Show this help"
+      echo "  --non-interactive           Run without prompts (use defaults)"
+      echo "  --tier TIER                 MINIMAL/LOW/MEDIUM/HIGH"
+      echo "  --profile PROFILE           generic/web/iot/media/dev"
+      echo "  --force                     Force rerun"
+      echo "  --help                      Show this help"
       exit 0
       ;;
-    *)
-      log_error "Unknown option: $1"; exit 1 ;;
+    *) log_error "Unknown option: $1"; exit 1 ;;
   esac
 done
 
@@ -138,7 +136,7 @@ read_tty() {
   fi
 }
 
-if [ "$EUID" -eq 0 ]; then 
+if [ "$EUID" -eq 0 ]; then
   log_error "Please do not run this script as root or with sudo"
   log_error "The script will prompt for sudo when needed"
   exit 1
@@ -148,7 +146,7 @@ fi
 # Temperature monitoring
 ############################################################
 check_temperature() {
-  if command -v vcgencmd &> /dev/null; then
+  if command -v vcgencmd &>/dev/null; then
     local temp_str temp temp_int
     temp_str=$(vcgencmd measure_temp 2>/dev/null || echo "temp=0.0'C")
     temp=$(echo "$temp_str" | grep -oP '\d+\.\d+' | head -1 || true)
@@ -628,7 +626,7 @@ fi
 if ! is_checkpoint_passed "ESSENTIAL"; then
   log_info "Installing essential packages for $PERF_TIER tier system..."
   ESSENTIAL_PACKAGES=(curl wget git vim htop tree unzip apt-transport-https ca-certificates gnupg lsb-release net-tools ufw)
-  # (optional, for better IP conflict check)
+  # Better IP conflict check (optional)
   ESSENTIAL_PACKAGES+=(arping)
   [[ "$PERF_TIER" != "MINIMAL" ]] && ESSENTIAL_PACKAGES+=(build-essential)
   if [[ "$PERF_TIER" == "HIGH" || "$PERF_TIER" == "MEDIUM" ]]; then
@@ -708,7 +706,8 @@ if ! is_checkpoint_passed "EMAIL"; then
         log_info "Create one at: https://myaccount.google.com/apppasswords"
 
         printf "Enter your Gmail App Password (16 chars, no spaces): " > /dev/tty
-        stty -echo; read -r app_password < /dev/tty || app_password=""; stty echo; echo > /dev/tty
+        IFS= read -rs app_password < /dev/tty || app_password=""
+        echo > /dev/tty
 
         if [ -n "$app_password" ]; then
           printf "%s" "$app_password" | gpg --symmetric --cipher-algo AES256 -o ~/.secrets/msmtp.gpg
