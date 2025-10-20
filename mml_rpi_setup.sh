@@ -766,4 +766,286 @@ if ! is_checkpoint_passed "RASPI_CONFIG"; then
       fi
       if ! grep -q "^gpu_mem=" /boot/config.txt 2>/dev/null && ! grep -q "^gpu_mem=" /boot/firmware/config.txt 2>/dev/null; then
         if [ -f /boot/firmware/config.txt ]; then echo "gpu_mem=$gpu_mem" | sudo tee -a /boot/firmware/config.txt >/dev/null
-        else echo "gpu_mem=$gpu_mem" | sudo tee -a /
+        else echo "gpu_mem=$gpu_mem" | sudo tee -a /boot/config.txt >/dev/null; fi
+        log_success "GPU memory set to ${gpu_mem} MB (requires reboot)"
+      else
+        log_warning "GPU memory already configured in config.txt"
+      fi
+    fi
+
+    if prompt_yn "Enable I2C interface? (y/n): " n; then sudo raspi-config nonint do_i2c 0; log_success "I2C enabled"; fi
+    if prompt_yn "Enable SPI interface? (y/n): " n; then sudo raspi-config nonint do_spi 0; log_success "SPI enabled"; fi
+    if prompt_yn "Enable Camera interface? (y/n): " n; then sudo raspi-config nonint do_camera 0; log_success "Camera enabled"; fi
+  else
+    log_warning "raspi-config not found, skipping Pi-specific configuration"
+  fi
+  save_checkpoint "RASPI_CONFIG"
+fi
+
+############################################################
+# Python setup with piwheels
+############################################################
+if ! is_checkpoint_passed "PYTHON"; then
+  if [[ "$PERF_TIER" != "MINIMAL" ]]; then
+    setup_piwheels
+    if prompt_yn "Install Python packages? (y/n): " y; then
+      log_info "Installing Python packages for $PERF_TIER tier system..."
+      PYTHON_PACKAGES=()
+      if [[ "$PERF_TIER" == "LOW" ]]; then
+        log_warning "Installing only lightweight Python packages for low-spec Pi"
+        PYTHON_PACKAGES+=(requests RPi.GPIO)
+        if prompt_yn "Install Flask? (y/n): " n; then PYTHON_PACKAGES+=(flask); fi
+      elif [[ "$PERF_TIER" == "MEDIUM" ]]; then
+        PYTHON_PACKAGES+=(requests flask RPi.GPIO)
+        if prompt_yn "Install numpy? (y/n): " n; then PYTHON_PACKAGES+=(numpy); fi
+        if prompt_yn "Install Adafruit libs? (y/n): " n; then PYTHON_PACKAGES+=(adafruit-circuitpython-motor adafruit-circuitpython-servo); fi
+      else
+        PYTHON_PACKAGES+=(numpy requests flask RPi.GPIO adafruit-circuitpython-motor adafruit-circuitpython-servo)
+        if prompt_yn "Install matplotlib? (y/n): " n; then PYTHON_PACKAGES+=(matplotlib); fi
+      fi
+      if [ ${#PYTHON_PACKAGES[@]} -gt 0 ]; then
+        log_info "Installing: ${PYTHON_PACKAGES[*]}"
+        [[ "$PERF_TIER" == "LOW" ]] && log_warning "Installation may take 5-15 minutes with piwheels..."
+        if pip3 install --user --no-warn-script-location "${PYTHON_PACKAGES[@]}"; then
+          log_success "Python packages installed"
+          grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+        else
+          log_warning "Some Python packages may have failed to install"
+          log_info "Retry later with: pip3 install --user <package>"
+        fi
+      fi
+    fi
+  else
+    log_info "Skipping Python packages for MINIMAL tier"
+  fi
+  save_checkpoint "PYTHON"; check_temperature
+fi
+
+############################################################
+# Profile-specific installations
+############################################################
+if ! is_checkpoint_passed "PROFILE"; then
+  log_info "Installing profile-specific packages: $PROFILE"
+  case $PROFILE in
+    web)
+      log_info "Installing web server stack..."
+      if [[ "$PERF_TIER" == "MINIMAL" ]]; then
+        log_warning "Web server profile not recommended for MINIMAL tier"
+        if prompt_yn "Continue anyway? (y/n): " n; then
+          sudo apt-get install -y nginx php-fpm sqlite3 php-sqlite3
+          sudo systemctl enable nginx; sudo systemctl start nginx
+          sudo ufw allow 'Nginx HTTP'; log_success "Nginx + PHP + SQLite installed"
+        else
+          log_info "Skipping web server installation"
+        fi
+      else
+        sudo apt-get install -y nginx php-fpm mariadb-server php-mysql
+        sudo systemctl enable nginx mariadb; sudo systemctl start nginx mariadb
+        sudo ufw allow 'Nginx HTTP'
+        log_success "Web server stack installed (Nginx + PHP + MariaDB)"
+        log_info "Secure MariaDB with: sudo mysql_secure_installation"
+      fi
+      ;;
+    iot)
+      log_info "Installing IoT sensor stack..."
+      sudo apt-get install -y mosquitto mosquitto-clients
+      [[ "$PERF_TIER" != "MINIMAL" ]] && pip3 install --user paho-mqtt adafruit-blinka
+      sudo systemctl enable mosquitto; sudo systemctl start mosquitto
+      sudo ufw allow 1883; log_success "IoT stack installed (MQTT broker + clients)"
+      ;;
+    media)
+      log_info "Installing media center tools..."
+      if [[ "$PERF_TIER" == "MINIMAL" ]]; then sudo apt-get install -y omxplayer
+      else sudo apt-get install -y vlc mpv youtube-dl ffmpeg; fi
+      log_success "Media tools installed"
+      ;;
+    dev)
+      log_info "Installing development environment..."
+      DEV_PACKAGES=(tmux screen docker.io docker-compose)
+      [[ "$PERF_TIER" != "MINIMAL" ]] && DEV_PACKAGES+=(code)
+      sudo apt-get install -y "${DEV_PACKAGES[@]}" || log_warning "Some dev packages may have failed"
+      if command -v docker &> /dev/null; then sudo usermod -aG docker "$USER"; log_success "Added $USER to docker group (logout required)"; fi
+      log_success "Development environment installed"
+      ;;
+    generic) log_info "Generic profile - no additional packages" ;;
+  esac
+  save_checkpoint "PROFILE"; check_temperature
+fi
+
+############################################################
+# Directories and aliases
+############################################################
+if ! is_checkpoint_passed "ALIASES"; then
+  log_info "Creating useful directories..."; mkdir -p ~/projects ~/scripts ~/backup ~/logs
+  log_info "Setting up useful aliases..."
+  if ! grep -q "# === Custom Aliases ===" ~/.bashrc; then
+    cat >> ~/.bashrc <<'EOF'
+
+# === Custom Aliases ===
+alias ll='ls -alF'
+alias la='ls -A'
+alias l='ls -CF'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias grep='grep --color=auto'
+alias temp='vcgencmd measure_temp'
+alias cpu='cat /proc/cpuinfo | grep "model name" | head -1'
+alias memory='free -h'
+alias disk='df -h'
+alias gs='git status'
+alias ga='git add'
+alias gc='git commit -m'
+alias gp='git push'
+alias gl='git log --oneline --graph --decorate'
+alias gd='git diff'
+alias processes='ps aux | head -20'
+alias ports='netstat -tuln'
+alias update='sudo apt update && sudo apt upgrade -y'
+alias sysinfo='~/scripts/sysinfo.sh'
+alias profile='cat ~/.rpi_setup_state'
+
+EOF
+    log_success "Aliases added to ~/.bashrc"
+  else
+    log_info "Aliases already exist in ~/.bashrc"
+  fi
+
+  log_info "Creating system info script..."
+  cat > ~/scripts/sysinfo.sh <<'EOF'
+#!/bin/bash
+echo "=========================================="
+echo "=== Raspberry Pi System Information ==="
+echo "=========================================="
+echo "Hostname:      $(hostname)"
+echo "Model:         $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' || echo 'N/A')"
+echo "Serial:        $(grep Serial /proc/cpuinfo | awk '{print $3}' || echo 'N/A')"
+echo "OS:            $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+echo "Kernel:        $(uname -r)"
+echo "Architecture:  $(uname -m)"
+echo "Uptime:        $(uptime -p)"
+echo "Temperature:   $(vcgencmd measure_temp 2>/dev/null || echo 'N/A')"
+echo "Memory Usage:  $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+echo "Swap Usage:    $(free -h | awk '/^Swap:/ {print $3 "/" $2}')"
+echo "Disk Usage:    $(df -h / | awk '/\// {print $3 "/" $2 " (" $5 ")"}')"
+echo "Load Average:  $(uptime | awk -F'load average:' '{print $2}')"
+echo "IP Address:    $(hostname -I | awk '{print $1}')"
+echo "SSH Status:    $(systemctl is-active ssh)"
+echo "Firewall:      $(sudo ufw status | head -1)"
+if [ -f ~/.rpi_setup_state ]; then
+  echo "---"
+  echo "Setup Profile: $(grep PROFILE= ~/.rpi_setup_state | cut -d= -f2)"
+  echo "Setup Date:    $(grep INSTALL_DATE= ~/.rpi_setup_state | cut -d= -f2)"
+fi
+echo "=========================================="
+EOF
+  chmod +x ~/scripts/sysinfo.sh
+  log_success "System info script created at ~/scripts/sysinfo.sh"
+
+  if [[ "$PERF_TIER" == "LOW" || "$PERF_TIER" == "MINIMAL" ]]; then
+    log_info "Creating performance tips file for low-spec Pi..."
+    cat > ~/LOW_SPEC_TIPS.txt <<'EOF'
+=== Performance Tips for Low-Spec Raspberry Pi ===
+(See RAM, swap, services, storage cleanup, overclocking cautions, headless tips, profile switching, etc.)
+EOF
+    log_success "Performance tips saved to ~/LOW_SPEC_TIPS.txt"
+  fi
+
+  save_checkpoint "ALIASES"
+fi
+
+############################################################
+# Save final state
+############################################################
+save_state
+
+############################################################
+# Cleanup
+############################################################
+log_info "Cleaning up package cache..."
+sudo apt-get autoremove -y
+sudo apt-get autoclean
+
+############################################################
+# Mark as complete
+############################################################
+save_checkpoint "COMPLETE"; clear_checkpoint
+
+############################################################
+# Run system info reporter
+############################################################
+log_info "Running system information reporter..."
+echo ""
+if command -v curl &> /dev/null; then
+  log_info "Fetching and running mml_rpi_info script..."
+  if [ -f ~/.msmtprc ]; then
+    EMAIL_ADDR=$(grep "^from" ~/.msmtprc | awk '{print $2}')
+    log_info "Using configured email: $EMAIL_ADDR"
+    if curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_info/main/mml_rpi_info.sh | bash -s -- --email "$EMAIL_ADDR"; then
+      log_success "System info report sent successfully"
+    else
+      log_warning "System info report failed - you can run it manually later"
+      log_info "Command: curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_info/main/mml_rpi_info.sh | bash -s -- --email YOUR_EMAIL"
+    fi
+  else
+    if [ "$NON_INTERACTIVE" -eq 1 ]; then
+      log_info "Running system info report without email..."
+      curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_info/main/mml_rpi_info.sh | bash || log_warning "System info report failed"
+    else
+      if prompt_yn "Send system info report via email? (y/n): " n; then
+        report_email=$(read_tty "Enter email address for report: ")
+        if [ -n "$report_email" ]; then
+          if curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_info/main/mml_rpi_info.sh | bash -s -- --email "$report_email"; then
+            log_success "System info report sent to $report_email"
+          else
+            log_warning "System info report failed"
+          fi
+        else
+          log_info "Skipping system info report"
+        fi
+      else
+        log_info "Skipping system info report"
+      fi
+    fi
+  fi
+else
+  log_warning "curl not available, skipping system info report"
+fi
+
+echo ""
+
+############################################################
+# Summary + Reboot prompt
+############################################################
+echo ""
+echo "=========================================="
+log_success "Raspberry Pi setup completed successfully!"
+echo "=========================================="
+echo "Configuration Summary:"
+echo "  - Hostname: $NEW_HOSTNAME"
+echo "  - Model: Raspberry Pi $PI_MODEL"
+echo "  - Serial: $PI_SERIAL"
+echo "  - Memory: ${PI_MEMORY}MB RAM"
+echo "  - Performance Tier: $PERF_TIER"
+echo "  - Architecture: $PI_ARCH"
+echo "  - Profile: $PROFILE ($PROFILE_ABBREV)"
+[ -f ~/.msmtprc ] && echo "  - Email (msmtp) configured"
+[[ "$PERF_TIER" == "LOW" || "$PERF_TIER" == "MINIMAL" ]] && echo "  - Performance tips: ~/LOW_SPEC_TIPS.txt"
+echo ""
+echo "Useful commands:"
+echo "  sysinfo           - Show system information"
+echo "  profile           - Show current setup profile"
+echo "  temp              - Show CPU temperature"
+echo "  update            - Update and upgrade packages"
+echo ""
+log_warning "IMPORTANT: Reboot required to finalize all changes"
+log_info "New hostname ($NEW_HOSTNAME) will be active after reboot"
+echo ""
+if prompt_yn "Would you like to reboot now? (y/n): " n; then
+  log_info "Rebooting in 5 seconds... (Ctrl+C to cancel)"; sleep 5; sudo reboot
+else
+  log_info "Please remember to reboot when convenient: sudo reboot"
+  if [[ "$PERF_TIER" == "LOW" || "$PERF_TIER" == "MINIMAL" ]]; then
+    log_info "After reboot, consider reducing GPU memory in /boot/config.txt to 16MB"
+  fi
+  echo ""; log_success "Setup complete! Enjoy your Raspberry Pi!"
+fi
