@@ -18,3 +18,7 @@ chmod +x mml_rpi_setup.sh
 
 
 curl -sSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh | bash -s -- --force </dev/tty
+
+
+bash <(curl -sSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh) -- --force
+
