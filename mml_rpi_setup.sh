@@ -34,14 +34,26 @@ fi
 # Locale fix
 ############################################################
 setup_locale() {
-  if ! locale -a 2>/dev/null | grep -qi '^en_GB\.utf8$'; then
-    log_info "Setting up en_GB.UTF-8 locale..."
-    sudo apt-get update -y
-    sudo apt-get install -y locales
-    sudo sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
-    sudo locale-gen en_GB.UTF-8
-    sudo update-locale LANG=en_GB.UTF-8
+  # Use a safe temporary locale during setup to avoid perl/apt warnings
+  export LC_ALL=C.UTF-8
+  export LANG=C.UTF-8
+
+  # Ensure locales pkg is installed
+  sudo apt-get update -y
+  sudo apt-get install -y locales
+
+  # Enable en_GB.UTF-8 if not already
+  if ! grep -qi '^en_GB\.UTF-8 UTF-8' /etc/locale.gen; then
+    sudo sed -i 's/^# *en_GB\.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
+    # If the line is truly missing, append it
+    grep -q '^en_GB\.UTF-8 UTF-8' /etc/locale.gen || echo 'en_GB.UTF-8 UTF-8' | sudo tee -a /etc/locale.gen >/dev/null
   fi
+
+  # Generate and set defaults
+  sudo locale-gen en_GB.UTF-8
+  sudo update-locale LANG=en_GB.UTF-8 LC_ALL=en_GB.UTF-8
+
+  # Switch this shell to the final locale
   export LANG=en_GB.UTF-8
   export LC_ALL=en_GB.UTF-8
 }
