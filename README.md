@@ -12,4 +12,4 @@ bash <(curl -sSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/
 curl -fsSLO https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh && chmod +x mml_rpi_setup.sh && ./mml_rpi_setup.sh --force
 
 
-curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.shh | bash
+curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh | bash
