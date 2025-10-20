@@ -141,6 +141,182 @@ if [ "$EUID" -eq 0 ]; then
   exit 1
 fi
 
+
+# --- Network helpers (static IP selection with conflict check) ---
+
+nm_available() { command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager 2>/dev/null; }
+
+get_default_iface() {
+  ip route 2>/dev/null | awk '/^default/ {print $5; exit}'
+}
+
+list_ipv4_ifaces() {
+  ip -o -4 addr show | awk '{print $2}' | sort -u
+}
+
+iface_current_cidr() {
+  local ifc="$1"
+  ip -o -4 addr show dev "$ifc" | awk '{print $4}' | head -1
+}
+
+iface_current_gw() {
+  ip route | awk '/^default/ {print $3; exit}'
+}
+
+is_ip_in_use() {
+  # $1=ip, $2=iface (optional)
+  local ip="$1" ifc="${2:-}"
+  # quick ping check
+  ping -c1 -W1 "$ip" >/dev/null 2>&1 && return 0
+  # more robust ARP probe if available
+  if command -v arping >/dev/null 2>&1; then
+    if [ -n "$ifc" ]; then
+      sudo arping -D -c 2 -w 2 -I "$ifc" "$ip" >/dev/null 2>&1 && return 0
+    else
+      sudo arping -D -c 2 -w 2 "$ip" >/dev/null 2>&1 && return 0
+    fi
+  fi
+  return 1
+}
+
+write_dhcpcd_static() {
+  local ifc="$1" cidr="$2" gw="$3" dns="$4"
+  local conf="/etc/dhcpcd.conf"
+  local tmp="$(mktemp)"
+  # remove previous managed block
+  if [ -r "$conf" ]; then
+    sudo awk '
+      BEGIN{skip=0}
+      /# >>> mml_rpi_setup static/ {skip=1; next}
+      /# <<< mml_rpi_setup static/ {skip=0; next}
+      skip==0 {print}
+    ' "$conf" | sudo tee "$tmp" >/dev/null
+  else
+    : > "$tmp"
+  fi
+
+  {
+    cat "$tmp"
+    echo "# >>> mml_rpi_setup static"
+    echo "interface $ifc"
+    echo "static ip_address=$cidr"
+    echo "static routers=$gw"
+    echo "static domain_name_servers=$dns"
+    echo "# <<< mml_rpi_setup static"
+  } | sudo tee "$conf" >/dev/null
+  rm -f "$tmp"
+
+  sudo systemctl restart dhcpcd || true
+}
+
+remove_dhcpcd_static() {
+  local conf="/etc/dhcpcd.conf"
+  [ -r "$conf" ] || return 0
+  local tmp="$(mktemp)"
+  sudo awk '
+    BEGIN{skip=0}
+    /# >>> mml_rpi_setup static/ {skip=1; next}
+    /# <<< mml_rpi_setup static/ {skip=0; next}
+    skip==0 {print}
+  ' "$conf" | sudo tee "$tmp" >/dev/null
+  sudo mv "$tmp" "$conf"
+  sudo systemctl restart dhcpcd || true
+}
+
+configure_static_nm() {
+  local ifc="$1" cidr="$2" gw="$3" dns="$4"
+  local conn
+  conn=$(nmcli -t -f NAME,DEVICE con show --active | awk -F: -v IF="$ifc" '$2==IF{print $1; exit}')
+  [ -z "$conn" ] && conn="$ifc"
+  sudo nmcli con mod "$conn" ipv4.method manual ipv4.addresses "$cidr" ipv4.gateway "$gw" ipv4.dns "$dns" ipv6.method ignore
+  sudo nmcli con up "$conn" || sudo nmcli dev reapply "$ifc" || true
+}
+
+configure_dhcp_nm() {
+  local ifc="$1"
+  local conn
+  conn=$(nmcli -t -f NAME,DEVICE con show --active | awk -F: -v IF="$ifc" '$2==IF{print $1; exit}')
+  [ -z "$conn" ] && conn="$ifc"
+  sudo nmcli con mod "$conn" ipv4.method auto ipv6.method ignore
+  sudo nmcli con up "$conn" || sudo nmcli dev reapply "$ifc" || true
+}
+
+configure_network() {
+  # Ask if user wants static IP
+  if ! prompt_yn "Would you like to set a static IPv4 address? (y/n): " n; then
+    log_info "Keeping DHCP configuration"
+    return
+  fi
+
+  # Interface selection
+  local default_ifc="$(get_default_iface)"
+  local ifaces=($(list_ipv4_ifaces))
+  local ifc="$default_ifc"
+  if [ ${#ifaces[@]} -gt 1 ]; then
+    echo "Available interfaces: ${ifaces[*]}"
+    local sel
+    sel=$(read_tty "Choose interface (default: $default_ifc): ")
+    ifc="${sel:-$default_ifc}"
+  fi
+  [ -z "$ifc" ] && { log_warning "No IPv4 interface found; skipping static IP setup."; return; }
+
+  # Derive sensible defaults from current config
+  local current_cidr="$(iface_current_cidr "$ifc")"   # e.g. 192.168.1.23/24
+  local current_gw="$(iface_current_gw)"
+  local def_dns="1.1.1.1 8.8.8.8"
+
+  # Prompt values
+  echo ""
+  log_info "Enter the static IP details for interface: $ifc"
+  log_info "Use CIDR notation (e.g. 192.168.1.50/24)"
+  local cidr_in gw_in dns_in
+  cidr_in=$(read_tty "Static IP (CIDR) [default: ${current_cidr%/*}/24 if unknown]: ")
+  if [ -z "$cidr_in" ]; then
+    if [[ "$current_cidr" =~ /[0-9]+$ ]]; then
+      cidr_in="${current_cidr%/*}/${current_cidr#*/}"
+    else
+      # fallback if we couldn't detect prefix
+      cidr_in="$(hostname -I | awk '{print $1}')/24"
+    fi
+  fi
+  gw_in=$(read_tty "Gateway [default: $current_gw]: ")
+  gw_in="${gw_in:-$current_gw}"
+  dns_in=$(read_tty "DNS servers space-separated [default: $def_dns]: ")
+  dns_in="${dns_in:-$def_dns}"
+
+  local ip_only="${cidr_in%%/*}"
+
+  # Conflict check
+  log_info "Checking if $ip_only is already in use on the network..."
+  if is_ip_in_use "$ip_only" "$ifc"; then
+    log_warning "Address $ip_only appears to be in use. Falling back to DHCP."
+    if nm_available; then
+      configure_dhcp_nm "$ifc"
+    else
+      remove_dhcpcd_static
+    fi
+    return
+  fi
+
+  # Apply configuration
+  if nm_available; then
+    log_info "Configuring static IP via NetworkManager..."
+    configure_static_nm "$ifc" "$cidr_in" "$gw_in" "$dns_in"
+  else
+    log_info "Configuring static IP via dhcpcd..."
+    write_dhcpcd_static "$ifc" "$cidr_in" "$gw_in" "$dns_in"
+  fi
+
+  # Verify we have the address
+  sleep 2
+  ip -4 addr show dev "$ifc" | grep -q "$ip_only" && \
+    log_success "Static IP $cidr_in set on $ifc" || \
+    log_warning "Could not verify static IP on $ifc. Network may need a reboot or replug."
+}
+
+
+
+
 ############################################################
 # Temperature monitoring
 ############################################################
@@ -207,6 +383,7 @@ is_checkpoint_passed() {
     ESSENTIAL) [[ "$checkpoint" =~ ^(START|LOCALE|DETECT|SWAP|UPDATE|UPGRADE)$ ]] ;;
     SECURITY) [[ "$checkpoint" =~ ^(START|LOCALE|DETECT|SWAP|UPDATE|UPGRADE|ESSENTIAL)$ ]] ;;
     HOSTNAME) [[ "$checkpoint" =~ ^(START|LOCALE|DETECT|SWAP|UPDATE|UPGRADE|ESSENTIAL|SECURITY)$ ]] ;;
+    NETWORK) [[ "$checkpoint" =~ ^(START|LOCALE|DETECT|SWAP|UPDATE|UPGRADE|ESSENTIAL|SECURITY|HOSTNAME)$ ]] ;;
     GIT) [[ "$checkpoint" =~ ^(START|LOCALE|DETECT|SWAP|UPDATE|UPGRADE|ESSENTIAL|SECURITY|HOSTNAME)$ ]] ;;
     EMAIL) [[ "$checkpoint" =~ ^(START|LOCALE|DETECT|SWAP|UPDATE|UPGRADE|ESSENTIAL|SECURITY|HOSTNAME|GIT)$ ]] ;;
     RASPI_CONFIG) [[ "$checkpoint" =~ ^(START|LOCALE|DETECT|SWAP|UPDATE|UPGRADE|ESSENTIAL|SECURITY|HOSTNAME|GIT|EMAIL)$ ]] ;;
@@ -447,6 +624,14 @@ set_hostname() {
 }
 
 ############################################################
+# Network (Static IP selection)
+############################################################
+if ! is_checkpoint_passed "NETWORK"; then
+  configure_network
+  save_checkpoint "NETWORK"
+fi
+
+############################################################
 # Swap setup
 ############################################################
 setup_swap() {
@@ -665,7 +850,7 @@ if ! is_checkpoint_passed "ESSENTIAL"; then
   ESSENTIAL_PACKAGES=(
     curl wget git vim htop tree unzip
     apt-transport-https ca-certificates
-    gnupg lsb-release net-tools ufw
+    gnupg lsb-release net-tools ufw arping
   )
   
   if [[ "$PERF_TIER" != "MINIMAL" ]]; then
