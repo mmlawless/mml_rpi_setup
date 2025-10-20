@@ -841,4 +841,502 @@ echo ""
 ############################################################
 # Recovery / Resume
 ############################################################
-LAST
+LAST_CHECKPOINT=$(load_checkpoint)
+
+if [ "$LAST_CHECKPOINT" != "START" ] && [ "$LAST_CHECKPOINT" != "COMPLETE" ] && [ "$FORCE_RERUN" -eq 0 ]; then
+  log_warning "Previous installation interrupted at: $LAST_CHECKPOINT"
+  
+  if prompt_yn "Resume from last checkpoint? (y/n): " y; then
+    log_info "Resuming from: $LAST_CHECKPOINT"
+  else
+    clear_checkpoint
+    LAST_CHECKPOINT="START"
+  fi
+else
+  LAST_CHECKPOINT="START"
+fi
+
+if load_state && [ "$FORCE_RERUN" -eq 0 ] && [ "$LAST_CHECKPOINT" = "COMPLETE" ]; then
+  log_info "Previous installation detected"
+  log_info "Use --force to rerun"
+  exit 0
+fi
+
+############################################################
+# Locale
+############################################################
+if ! is_checkpoint_passed "LOCALE"; then
+  setup_locale || exit 1
+  save_checkpoint "LOCALE"
+fi
+
+############################################################
+# Detection
+############################################################
+if ! is_checkpoint_passed "DETECT"; then
+  detect_pi_info
+  select_pi_model
+  select_profile
+  save_checkpoint "DETECT"
+fi
+
+############################################################
+# Hostname
+############################################################
+if ! is_checkpoint_passed "HOSTNAME"; then
+  set_hostname
+  save_checkpoint "HOSTNAME"
+fi
+
+############################################################
+# Network
+############################################################
+if ! is_checkpoint_passed "NETWORK"; then
+  configure_network
+  save_checkpoint "NETWORK"
+fi
+
+############################################################
+# Swap
+############################################################
+if ! is_checkpoint_passed "SWAP"; then
+  [[ "$PERF_TIER" == "LOW" || "$PERF_TIER" == "MINIMAL" ]] && setup_swap
+  save_checkpoint "SWAP"
+fi
+
+############################################################
+# System Update
+############################################################
+if ! is_checkpoint_passed "UPDATE"; then
+  log_info "Updating package lists..."
+  
+  if [ "$DRY_RUN" -eq 0 ]; then
+    sudo apt-get update -y || exit 1
+  fi
+  
+  save_checkpoint "UPDATE"
+fi
+
+############################################################
+# System Upgrade
+############################################################
+if ! is_checkpoint_passed "UPGRADE"; then
+  if [[ "$PERF_TIER" == "MINIMAL" ]]; then
+    if prompt_yn "Proceed with system upgrade? (slow) (y/n): " y; then
+      log_info "Upgrading packages..."
+      
+      if [ "$DRY_RUN" -eq 0 ]; then
+        sudo apt-get upgrade -y &
+        show_progress $! "Upgrading packages"
+      fi
+    fi
+  else
+    log_info "Upgrading packages..."
+    
+    if [ "$DRY_RUN" -eq 0 ]; then
+      if [[ "$PERF_TIER" == "LOW" ]]; then
+        sudo apt-get upgrade -y &
+        show_progress $! "Upgrading packages"
+      else
+        sudo apt-get upgrade -y
+      fi
+    fi
+  fi
+  
+  save_checkpoint "UPGRADE"
+  check_temperature
+fi
+
+############################################################
+# Essential Packages
+############################################################
+if ! is_checkpoint_passed "ESSENTIAL"; then
+  log_info "Installing essential packages..."
+  
+  ESSENTIAL_PACKAGES=(
+    curl wget git vim htop tree unzip
+    apt-transport-https ca-certificates gnupg
+    lsb-release net-tools ufw arping
+  )
+  
+  [[ "$PERF_TIER" != "MINIMAL" ]] && ESSENTIAL_PACKAGES+=(build-essential)
+  
+  if [[ "$PERF_TIER" == "HIGH" || "$PERF_TIER" == "MEDIUM" ]]; then
+    ESSENTIAL_PACKAGES+=(python3-pip python3-venv python3-dev)
+  elif [[ "$PERF_TIER" == "LOW" ]]; then
+    ESSENTIAL_PACKAGES+=(python3-pip python3-venv)
+  else
+    ESSENTIAL_PACKAGES+=(python3)
+  fi
+  
+  if [[ "$PERF_TIER" == "HIGH" || "$PERF_TIER" == "MEDIUM" ]]; then
+    if [[ "$PI_ARCH" != "armv6l" ]]; then
+      if prompt_yn "Install Node.js? (y/n): " n; then
+        ESSENTIAL_PACKAGES+=(nodejs npm)
+      fi
+    fi
+  fi
+  
+  install_packages "${ESSENTIAL_PACKAGES[@]}" || exit 1
+  
+  save_checkpoint "ESSENTIAL"
+  check_temperature
+fi
+
+############################################################
+# Security
+############################################################
+if ! is_checkpoint_passed "SECURITY"; then
+  log_info "Setting up firewall..."
+  
+  if [ "$DRY_RUN" -eq 0 ]; then
+    sudo ufw default deny incoming
+    sudo ufw default allow outgoing
+    sudo ufw allow ssh comment 'SSH'
+    sudo ufw --force enable
+    log_success "Firewall configured"
+  fi
+  
+  if ! systemctl is-active --quiet ssh 2>/dev/null; then
+    if [ "$DRY_RUN" -eq 0 ]; then
+      sudo systemctl enable --now ssh
+    fi
+  fi
+  
+  save_checkpoint "SECURITY"
+fi
+
+############################################################
+# VNC
+############################################################
+if ! is_checkpoint_passed "VNC"; then
+  if [ "$ENABLE_VNC" -eq 1 ] || prompt_yn "Enable VNC? (y/n): " n; then
+    setup_vnc
+  else
+    VNC_ENABLED=0
+  fi
+  
+  save_checkpoint "VNC"
+fi
+
+############################################################
+# Git
+############################################################
+if ! is_checkpoint_passed "GIT"; then
+  if prompt_yn "Configure Git? (y/n): " n; then
+    local git_username git_email
+    
+    git_username=$(read_tty "Git username: " "")
+    git_email=$(read_tty "Git email: " "")
+    
+    if [ -n "$git_username" ] && [ -n "$git_email" ]; then
+      if validate_email "$git_email"; then
+        if [ "$DRY_RUN" -eq 0 ]; then
+          git config --global user.name "$git_username"
+          git config --global user.email "$git_email"
+          git config --global init.defaultBranch main
+          git config --global pull.rebase false
+          log_success "Git configured"
+        fi
+      fi
+    fi
+  fi
+  
+  save_checkpoint "GIT"
+fi
+
+############################################################
+# Email
+############################################################
+if ! is_checkpoint_passed "EMAIL"; then
+  if [ ! -f ~/.msmtprc ]; then
+    if prompt_yn "Configure email (msmtp)? (y/n): " n; then
+      install_packages msmtp msmtp-mta gpg
+      
+      mkdir -p ~/.secrets
+      chmod 700 ~/.secrets
+      
+      local email_address
+      email_address=$(read_tty "Gmail address: " "")
+      
+      if [ -n "$email_address" ] && validate_email "$email_address"; then
+        log_info "Create App Password at: https://myaccount.google.com/apppasswords"
+        
+        local app_password
+        app_password=$(read_secure "Gmail App Password: ")
+        
+        if [ -n "$app_password" ] && [ ${#app_password} -ge 16 ]; then
+          if [ "$DRY_RUN" -eq 0 ]; then
+            printf "%s" "$app_password" | gpg --batch --yes --symmetric --cipher-algo AES256 -o ~/.secrets/msmtp.gpg 2>/dev/null
+            app_password=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64)
+            unset app_password
+            
+            chmod 600 ~/.secrets/msmtp.gpg
+            
+            cat > ~/.msmtprc <<'MSMTPEOF'
+defaults
+auth           on
+tls            on
+tls_starttls   on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        ~/.msmtp.log
+
+account        gmail
+host           smtp.gmail.com
+port           587
+from           EMAIL_PLACEHOLDER
+user           EMAIL_PLACEHOLDER
+passwordeval   "gpg --quiet --batch --decrypt ~/.secrets/msmtp.gpg"
+
+account default : gmail
+MSMTPEOF
+            
+            sed -i "s/EMAIL_PLACEHOLDER/$email_address/g" ~/.msmtprc
+            chmod 600 ~/.msmtprc
+            
+            log_info "Testing email..."
+            if echo "Test from $(hostname)" | msmtp "$email_address" 2>/dev/null; then
+              log_success "Email configured and tested"
+            else
+              log_warning "Email configured but test failed"
+            fi
+          fi
+        fi
+      fi
+    fi
+  fi
+  
+  save_checkpoint "EMAIL"
+fi
+
+############################################################
+# Raspi-config
+############################################################
+if ! is_checkpoint_passed "RASPI_CONFIG"; then
+  if command -v raspi-config &>/dev/null; then
+    log_info "Configuring Pi-specific settings..."
+    
+    if [ "$DRY_RUN" -eq 0 ]; then
+      sudo raspi-config nonint do_expand_rootfs || true
+    fi
+    
+    if prompt_yn "Enable I2C? (y/n): " n; then
+      [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_i2c 0
+    fi
+    
+    if prompt_yn "Enable SPI? (y/n): " n; then
+      [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_spi 0
+    fi
+    
+    if prompt_yn "Enable Camera? (y/n): " n; then
+      [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_camera 0
+    fi
+  fi
+  
+  save_checkpoint "RASPI_CONFIG"
+fi
+
+############################################################
+# Python
+############################################################
+if ! is_checkpoint_passed "PYTHON"; then
+  if [[ "$PERF_TIER" != "MINIMAL" ]]; then
+    setup_piwheels
+    
+    if prompt_yn "Install Python packages? (y/n): " y; then
+      PYTHON_PACKAGES=()
+      
+      if [[ "$PERF_TIER" == "LOW" ]]; then
+        PYTHON_PACKAGES+=(requests RPi.GPIO)
+        prompt_yn "Install Flask? (y/n): " n && PYTHON_PACKAGES+=(flask)
+      elif [[ "$PERF_TIER" == "MEDIUM" ]]; then
+        PYTHON_PACKAGES+=(requests flask RPi.GPIO)
+        prompt_yn "Install numpy? (y/n): " n && PYTHON_PACKAGES+=(numpy)
+      else
+        PYTHON_PACKAGES+=(numpy requests flask RPi.GPIO)
+      fi
+      
+      if [ ${#PYTHON_PACKAGES[@]} -gt 0 ]; then
+        if [ "$DRY_RUN" -eq 0 ]; then
+          pip3 install --user --no-warn-script-location "${PYTHON_PACKAGES[@]}" || log_warning "Some packages failed"
+          
+          if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc; then
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+          fi
+        fi
+      fi
+    fi
+  fi
+  
+  save_checkpoint "PYTHON"
+  check_temperature
+fi
+
+############################################################
+# Profile
+############################################################
+if ! is_checkpoint_passed "PROFILE"; then
+  log_info "Installing profile: $PROFILE"
+  
+  case $PROFILE in
+    web)
+      if [[ "$PERF_TIER" == "MINIMAL" ]]; then
+        if prompt_yn "Web profile on MINIMAL tier? (y/n): " n; then
+          install_packages nginx php-fpm sqlite3 php-sqlite3
+          [ "$DRY_RUN" -eq 0 ] && sudo systemctl enable --now nginx
+        fi
+      else
+        install_packages nginx php-fpm mariadb-server php-mysql
+        if [ "$DRY_RUN" -eq 0 ]; then
+          sudo systemctl enable --now nginx mariadb
+          sudo ufw allow 'Nginx HTTP'
+        fi
+      fi
+      ;;
+      
+    iot)
+      install_packages mosquitto mosquitto-clients
+      if [ "$DRY_RUN" -eq 0 ]; then
+        [[ "$PERF_TIER" != "MINIMAL" ]] && pip3 install --user paho-mqtt adafruit-blinka
+        sudo systemctl enable --now mosquitto
+        sudo ufw allow 1883 comment 'MQTT'
+      fi
+      ;;
+      
+    media)
+      if [[ "$PERF_TIER" == "MINIMAL" ]]; then
+        install_packages omxplayer
+      else
+        install_packages vlc mpv ffmpeg
+      fi
+      ;;
+      
+    dev)
+      DEV_PACKAGES=(tmux screen)
+      [[ "$PERF_TIER" != "MINIMAL" ]] && DEV_PACKAGES+=(docker.io docker-compose)
+      
+      install_packages "${DEV_PACKAGES[@]}"
+      
+      if [ "$DRY_RUN" -eq 0 ] && command -v docker &>/dev/null; then
+        sudo usermod -aG docker "$USER"
+      fi
+      ;;
+      
+    generic)
+      log_info "Generic profile - no additional packages"
+      ;;
+  esac
+  
+  save_checkpoint "PROFILE"
+  check_temperature
+fi
+
+############################################################
+# Aliases
+############################################################
+if ! is_checkpoint_passed "ALIASES"; then
+  log_info "Creating directories and aliases..."
+  
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p ~/projects ~/scripts ~/backup ~/logs
+    
+    if ! grep -q "# === Custom Aliases ===" ~/.bashrc; then
+      cat >> ~/.bashrc <<'BASHEOF'
+
+# === Custom Aliases ===
+alias ll='ls -alF'
+alias la='ls -A'
+alias ..='cd ..'
+alias temp='vcgencmd measure_temp'
+alias memory='free -h'
+alias disk='df -h'
+alias update='sudo apt update && sudo apt upgrade -y'
+alias sysinfo='~/scripts/sysinfo.sh'
+alias profile='cat ~/.rpi_setup_state'
+
+BASHEOF
+    fi
+    
+    cat > ~/scripts/sysinfo.sh <<'SYSINFOEOF'
+#!/bin/bash
+echo "=========================================="
+echo "Raspberry Pi System Information"
+echo "=========================================="
+echo "Hostname:    $(hostname)"
+echo "Model:       $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')"
+echo "OS:          $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+echo "Uptime:      $(uptime -p)"
+echo "Temperature: $(vcgencmd measure_temp 2>/dev/null)"
+echo "Memory:      $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+echo "Disk:        $(df -h / | awk '/\// {print $3 "/" $2}')"
+echo "IP:          $(hostname -I | awk '{print $1}')"
+[ -f ~/.rpi_setup_state ] && echo "Profile:     $(grep PROFILE= ~/.rpi_setup_state | cut -d= -f2)"
+echo "=========================================="
+SYSINFOEOF
+    chmod +x ~/scripts/sysinfo.sh
+  fi
+  
+  save_checkpoint "ALIASES"
+fi
+
+############################################################
+# Finalize
+############################################################
+save_state
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  log_info "Cleaning up..."
+  sudo apt-get autoremove -y
+  sudo apt-get autoclean
+fi
+
+save_checkpoint "COMPLETE"
+clear_checkpoint
+
+############################################################
+# Summary
+############################################################
+echo ""
+echo "=========================================="
+log_success "Setup completed successfully!"
+echo "=========================================="
+echo ""
+echo "Configuration:"
+echo "  Hostname: $NEW_HOSTNAME"
+echo "  Model: Pi $PI_MODEL"
+echo "  Memory: ${PI_MEMORY}MB"
+echo "  Tier: $PERF_TIER"
+echo "  Profile: $PROFILE"
+echo "  VNC: $([ "$VNC_ENABLED" -eq 1 ] && echo 'Enabled (port 5900)' || echo 'Disabled')"
+echo ""
+echo "Commands:"
+echo "  sysinfo  - System information"
+echo "  temp     - CPU temperature"
+echo "  update   - Update packages"
+echo ""
+
+if [ "$VNC_ENABLED" -eq 1 ]; then
+local vnc_ip
+  vnc_ip=$(hostname -I | awk '{print $1}')
+  echo "VNC Connection:"
+  echo "  Address: ${vnc_ip}:5900"
+  echo "  or: ${NEW_HOSTNAME}.local:5900"
+  echo ""
+fi
+
+log_warning "Reboot required to finalize all changes!"
+echo ""
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  log_info "DRY-RUN complete - no changes made"
+  exit 0
+fi
+
+if prompt_yn "Reboot now? (y/n): " n; then
+  log_info "Rebooting in 5 seconds... (Ctrl+C to cancel)"
+  sleep 5
+  sudo reboot
+else
+  log_info "Remember to reboot when convenient: sudo reboot"
+  log_success "Setup complete! Enjoy your Raspberry Pi!"
+fi
