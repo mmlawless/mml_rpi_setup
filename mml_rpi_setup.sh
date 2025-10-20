@@ -424,7 +424,7 @@ set_profile_abbrev() {
 # Hostname configuration
 ############################################################
 set_hostname() {
-  NEW_HOSTNAME="LH-PI0x-${PI_MODEL}-${PI_SERIAL}-${PROFILE_ABBREV}"
+  NEW_HOSTNAME="LH-PI${PI_MODEL}-${PI_SERIAL}-${PROFILE_ABBREV}"
   CURRENT_HOSTNAME=$(hostname)
   
   log_info "Current hostname: $CURRENT_HOSTNAME"
@@ -777,9 +777,9 @@ logfile        ~/.msmtp.log
 account        gmail
 host           smtp.gmail.com
 port           587
-from           $mmlawlessuk@gmail.com
-user           $mmlawlessuk@gmail.com
-password       $imdcjodjdezgsvqb
+from           ${email_address}
+user           ${email_address}
+password       ${app_password}
 
 account default : gmail
 EOF
