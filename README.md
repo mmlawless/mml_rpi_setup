@@ -8,3 +8,5 @@ Quick setup scripts for fresh Raspberry Pi installations.
 ```bash
 # Run the main setup script
 curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh | bash
+
+curl -sSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup.sh | bash -s -- --force
