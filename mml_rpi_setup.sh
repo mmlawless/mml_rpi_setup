@@ -24,15 +24,15 @@ cleanup() {
   local exit_code=$?
   sudo -k 2>/dev/null || true
   rm -f "$LOCK_FILE"
-  
+
+  # Use parameter expansion defaults in case colors are not set
+  echo -e "${RED:-}[ERROR]${NC:-} Script exited with error code $exit_code" >&2
   if [ $exit_code -ne 0 ]; then
-    echo -e "${RED}[ERROR]${NC} Script exited with error code $exit_code" >&2
-    echo -e "${RED}[ERROR]${NC} Check log file: $LOG_FILE" >&2
+    echo -e "${RED:-}[ERROR]${NC:-} Check log file: $LOG_FILE" >&2
   fi
-  
+
   exit $exit_code
 }
-trap cleanup EXIT INT TERM
 
 ############################################################
 # Colors and logging functions
@@ -53,6 +53,9 @@ log_progress() { echo -e "${CYAN}[PROGRESS $(date +%H:%M:%S)]${NC} $1"; }
 log_temp()     { echo -e "${MAGENTA}[TEMP $(date +%H:%M:%S)]${NC} $1"; }
 log_debug()    { [ "${DEBUG:-0}" -eq 1 ] && echo -e "[DEBUG $(date +%H:%M:%S)] $1" || true; }
 
+# Register trap after colors are defined
+trap cleanup EXIT INT TERM
+
 ############################################################
 # Logging setup
 ############################################################
@@ -71,7 +74,7 @@ setup_logging() {
 acquire_lock() {
   local max_wait=300
   local waited=0
-  
+
   while [ -e "$LOCK_FILE" ]; do
     if [ $waited -ge $max_wait ]; then
       log_error "Could not acquire lock after ${max_wait}s"
@@ -82,7 +85,7 @@ acquire_lock() {
     sleep 5
     waited=$((waited + 5))
   done
-  
+
   echo $$ > "$LOCK_FILE"
   chmod 600 "$LOCK_FILE"
 }
@@ -112,7 +115,7 @@ validate_number() {
   local value="$1"
   local min="${2:-0}"
   local max="${3:-999999}"
-  
+
   [[ "$value" =~ ^[0-9]+$ ]] || return 1
   [ "$value" -ge "$min" ] && [ "$value" -le "$max" ]
 }
@@ -125,10 +128,10 @@ validate_hostname() {
 validate_ip() {
   local ip="$1"
   [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
-  
+
   local IFS='.'
   local -a octets=($ip)
-  
+
   for octet in "${octets[@]}"; do
     [ "$octet" -gt 255 ] && return 1
   done
@@ -143,10 +146,10 @@ validate_email() {
 validate_cidr() {
   local cidr="$1"
   [[ "$cidr" =~ ^([0-9.]+)/([0-9]+)$ ]] || return 1
-  
+
   local ip="${BASH_REMATCH[1]}"
   local prefix="${BASH_REMATCH[2]}"
-  
+
   validate_ip "$ip" || return 1
   validate_number "$prefix" 0 32
 }
@@ -159,7 +162,7 @@ atomic_write() {
   local content="$2"
   local mode="${3:-600}"
   local tmp
-  
+
   tmp=$(mktemp "${target}.XXXXXX")
   echo "$content" > "$tmp"
   chmod "$mode" "$tmp"
@@ -171,45 +174,45 @@ atomic_write() {
 ############################################################
 setup_locale() {
   log_info "Setting up locale (en_GB.UTF-8)..."
-  
+
   export LC_ALL=C.UTF-8
   export LANG=C.UTF-8
-  
+
   local max_retries=3
   local attempt=1
-  
+
   while [ $attempt -le $max_retries ]; do
     if sudo apt-get update -y && sudo apt-get install -y locales; then
       break
     fi
-    
+
     log_warning "Locale package installation failed (attempt $attempt/$max_retries)"
-    
+
     if [ $attempt -eq $max_retries ]; then
       log_error "Failed to install locales package"
       return 1
     fi
-    
+
     sleep 5
     attempt=$((attempt + 1))
   done
-  
+
   if ! grep -qi '^en_GB\.UTF-8 UTF-8' /etc/locale.gen; then
     sudo sed -i 's/^# *en_GB\.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
     grep -q '^en_GB\.UTF-8 UTF-8' /etc/locale.gen || echo 'en_GB.UTF-8 UTF-8' | sudo tee -a /etc/locale.gen >/dev/null
   fi
-  
+
   if ! sudo locale-gen en_GB.UTF-8; then
     log_error "Failed to generate locale"
     return 1
   fi
-  
+
   sudo sed -i '/^LC_ALL=/d' /etc/default/locale
   sudo update-locale LANG=en_GB.UTF-8 LANGUAGE="en_GB:en"
-  
+
   export LANG=en_GB.UTF-8
   unset LC_ALL
-  
+
   log_success "Locale configured successfully"
 }
 
@@ -256,7 +259,7 @@ done
 
 prompt_yn() {
   local question="$1" default="${2:-n}" ans
-  
+
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would prompt: '$question' (defaulting to $default)"
     ans="$default"
@@ -273,19 +276,19 @@ prompt_yn() {
     log_debug "Non-interactive: defaulting '$question' to $default"
     ans="$default"
   fi
-  
+
   [[ "$ans" =~ ^[Yy]$ ]]
 }
 
 read_tty() {
   local prompt="$1" var default="${2:-}"
-  
+
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would prompt: '$prompt'"
     echo "$default"
     return
   fi
-  
+
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
     echo "$default"
   elif [ "$IS_TTY" -eq 1 ]; then
@@ -302,18 +305,18 @@ read_tty() {
 
 read_secure() {
   local prompt="$1" var
-  
+
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would prompt for secure input"
     echo "dummy_password"
     return
   fi
-  
+
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
     log_error "Cannot read secure input in non-interactive mode"
     return 1
   fi
-  
+
   if [ "$IS_TTY" -eq 1 ]; then
     if [ -r /dev/tty ]; then
       read -rs -p "$prompt" var < /dev/tty || var=""
@@ -338,17 +341,17 @@ fi
 ############################################################
 check_temperature() {
   command -v vcgencmd &>/dev/null || return 0
-  
+
   local temp_str temp temp_int
   temp_str=$(vcgencmd measure_temp 2>&1) || return 0
   temp=$(echo "$temp_str" | grep -oP '\d+\.\d+' | head -1)
   [ -z "$temp" ] && return 0
-  
+
   temp_int=$(echo "$temp" | cut -d. -f1)
   validate_number "$temp_int" 0 150 || return 0
-  
+
   log_temp "CPU Temperature: ${temp}°C"
-  
+
   if [ "$temp_int" -gt 80 ]; then
     log_temp "CRITICAL temperature! Pausing for cooldown..."
     sleep 30
@@ -357,7 +360,7 @@ check_temperature() {
     log_temp "High temperature, slowing down..."
     sleep 10
   fi
-  
+
   return 0
 }
 
@@ -382,27 +385,27 @@ is_checkpoint_passed() {
   local checkpoint="$1"
   local current
   current=$(load_checkpoint)
-  
+
   local -a checkpoints=(
     START LOCALE DETECT HOSTNAME NETWORK SWAP
     UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT
     EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE
   )
-  
+
   [ "$current" = "COMPLETE" ] && return 0
-  
+
   local current_idx=-1
   local check_idx=-1
-  
+
   for i in "${!checkpoints[@]}"; do
     [ "${checkpoints[$i]}" = "$current" ] && current_idx=$i
     [ "${checkpoints[$i]}" = "$checkpoint" ] && check_idx=$i
   done
-  
+
   [ $check_idx -eq -1 ] && return 1
   [ $current_idx -eq -1 ] && return 1
   [ $current_idx -le $check_idx ] && return 1
-  
+
   return 0
 }
 
@@ -424,7 +427,7 @@ SCRIPT_VERSION=$SCRIPT_VERSION
 VNC_ENABLED=${VNC_ENABLED:-0}
 EOF
 )
-  
+
   atomic_write "$STATE_FILE" "$state_content" 600
   log_debug "State saved"
 }
@@ -444,21 +447,21 @@ load_state() {
 ############################################################
 detect_pi_info() {
   log_info "Detecting hardware..."
-  
+
   PI_MODEL="unknown"
   PI_MEMORY=0
   PI_ARCH=$(uname -m)
   PI_SERIAL="UNKNOWN"
-  
+
   if [ -f /proc/cpuinfo ]; then
     PI_SERIAL=$(grep -m1 Serial /proc/cpuinfo | awk '{print $3}' | tail -c 9)
     [ -z "$PI_SERIAL" ] && PI_SERIAL="UNKNOWN"
   fi
-  
+
   if [ -f /proc/device-tree/model ]; then
     local model_string
     model_string=$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo "")
-    
+
     case "$model_string" in
       *"Pi Zero"*|*"Pi 0"*) PI_MODEL="0" ;;
       *"Pi 5"*) PI_MODEL="5" ;;
@@ -471,7 +474,7 @@ detect_pi_info() {
       *"Compute Module"*) PI_MODEL="CM" ;;
     esac
   fi
-  
+
   if [ -f /proc/meminfo ]; then
     local mem_kb
     mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -479,7 +482,7 @@ detect_pi_info() {
       PI_MEMORY=$((mem_kb / 1024))
     fi
   fi
-  
+
   log_info "Detected: Pi $PI_MODEL, ${PI_MEMORY}MB RAM, $PI_ARCH, Serial: $PI_SERIAL"
 }
 
@@ -498,7 +501,7 @@ set_performance_tier() {
   else
     PERF_TIER="MEDIUM"
   fi
-  
+
   log_info "Performance tier: $PERF_TIER"
 }
 
@@ -533,7 +536,7 @@ select_pi_model() {
         ;;
     esac
   fi
-  
+
   echo ""
   echo "=========================================="
   echo "Select Your Raspberry Pi Model"
@@ -548,10 +551,10 @@ select_pi_model() {
   echo "6) Pi 5"
   echo "7) Use auto-detected values"
   echo ""
-  
+
   local choice
   choice=$(read_tty "Enter choice [1-7] (default: 7): " "7")
-  
+
   case $choice in
     1) PI_MODEL="0"; PI_MEMORY=512; PI_ARCH="armv6l" ;;
     2) PI_MODEL="1"; PI_MEMORY=512; PI_ARCH="armv6l" ;;
@@ -562,9 +565,9 @@ select_pi_model() {
     7) log_info "Using auto-detected values" ;;
     *) log_warning "Invalid choice, using auto-detected values" ;;
   esac
-  
+
   set_performance_tier
-  
+
   echo ""
   log_info "Configuration: Pi $PI_MODEL, ${PI_MEMORY}MB RAM, $PI_ARCH"
   log_info "Performance tier: $PERF_TIER"
@@ -586,7 +589,7 @@ select_profile() {
         ;;
     esac
   fi
-  
+
   echo ""
   echo "=========================================="
   echo "Select Installation Profile"
@@ -597,10 +600,10 @@ select_profile() {
   echo "4) Media Center (MED)"
   echo "5) Development (DEV)"
   echo ""
-  
+
   local choice
   choice=$(read_tty "Enter choice [1-5] (default: 1): " "1")
-  
+
   case $choice in
     1) PROFILE="generic" ;;
     2) PROFILE="web" ;;
@@ -609,7 +612,7 @@ select_profile() {
     5) PROFILE="dev" ;;
     *) PROFILE="generic" ;;
   esac
-  
+
   set_profile_abbrev
   log_info "Selected profile: $PROFILE"
 }
@@ -620,25 +623,25 @@ select_profile() {
 set_hostname() {
   NEW_HOSTNAME="LH-PI${PI_MODEL}-${PI_SERIAL}-${PROFILE_ABBREV}"
   CURRENT_HOSTNAME=$(hostname)
-  
+
   log_info "Current hostname: $CURRENT_HOSTNAME"
   log_info "Proposed hostname: $NEW_HOSTNAME"
-  
+
   if ! validate_hostname "$NEW_HOSTNAME"; then
     log_warning "Generated hostname invalid, using fallback"
     NEW_HOSTNAME="rpi-${PI_SERIAL}"
-    
+
     if ! validate_hostname "$NEW_HOSTNAME"; then
       NEW_HOSTNAME="$CURRENT_HOSTNAME"
       return
     fi
   fi
-  
+
   if [ "$CURRENT_HOSTNAME" = "$NEW_HOSTNAME" ]; then
     log_info "Hostname already correct"
     return
   fi
-  
+
   if prompt_yn "Set hostname to $NEW_HOSTNAME? (y/n): " y; then
     if [ "$DRY_RUN" -eq 0 ]; then
       echo "$NEW_HOSTNAME" | sudo tee /etc/hostname >/dev/null
@@ -656,12 +659,12 @@ set_hostname() {
 ############################################################
 configure_network() {
   log_info "Network configuration..."
-  
+
   if ! prompt_yn "Set static IPv4 address? (y/n): " n; then
     log_info "Keeping DHCP"
     return
   fi
-  
+
   log_info "Static IP configuration available but simplified for this version"
   log_info "To configure manually: sudo nano /etc/dhcpcd.conf"
 }
@@ -671,24 +674,24 @@ configure_network() {
 ############################################################
 setup_swap() {
   [ "$PI_MEMORY" -gt 512 ] && return
-  
+
   log_info "Low memory detected. Checking swap..."
-  
+
   local current_swap
   current_swap=$(free -m | awk '/^Swap:/ {print $2}')
-  
+
   [ "$current_swap" -ge 1024 ] && return
-  
+
   if prompt_yn "Increase swap to 1024MB? (y/n): " y; then
     if [ "$DRY_RUN" -eq 0 ]; then
       sudo dphys-swapfile swapoff 2>/dev/null || true
-      
+
       if [ -f /etc/dphys-swapfile ]; then
         sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
       else
         echo "CONF_SWAPSIZE=1024" | sudo tee /etc/dphys-swapfile >/dev/null
       fi
-      
+
       sudo dphys-swapfile setup && sudo dphys-swapfile swapon
       log_success "Swap increased to 1024MB"
     fi
@@ -700,18 +703,18 @@ setup_swap() {
 ############################################################
 setup_piwheels() {
   log_info "Configuring piwheels..."
-  
+
   [ "$DRY_RUN" -eq 1 ] && return
-  
+
   mkdir -p ~/.pip
-  
+
   [ -f ~/.pip/pip.conf ] && grep -q "piwheels" ~/.pip/pip.conf && return
-  
+
   cat > ~/.pip/pip.conf <<'EOF'
 [global]
 extra-index-url=https://www.piwheels.org/simple
 EOF
-  
+
   chmod 600 ~/.pip/pip.conf
   log_success "Piwheels configured"
 }
@@ -723,19 +726,19 @@ show_progress() {
   local pid=$1
   local message=$2
   local elapsed=0
-  
+
   while kill -0 "$pid" 2>/dev/null; do
     printf "\r${CYAN}[PROGRESS]${NC} %s... %d seconds" "$message" "$elapsed"
     sleep 5
     elapsed=$((elapsed + 5))
     check_temperature || sleep 20
   done
-  
+
   wait "$pid"
   local exit_code=$?
-  
+
   printf "\r${CYAN}[PROGRESS]${NC} %s... Complete! (%d seconds)          \n" "$message" "$elapsed"
-  
+
   return $exit_code
 }
 
@@ -744,12 +747,12 @@ show_progress() {
 ############################################################
 setup_vnc() {
   log_info "Setting up VNC server..."
-  
+
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would install and configure VNC"
     return
   fi
-  
+
   if ! command -v vncserver >/dev/null 2>&1; then
     log_info "Installing VNC server..."
     if ! sudo apt-get install -y realvnc-vnc-server 2>/dev/null; then
@@ -757,19 +760,19 @@ setup_vnc() {
       sudo apt-get install -y tigervnc-standalone-server tigervnc-common || log_error "VNC install failed"
     fi
   fi
-  
+
   if command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_vnc 0 || true
   fi
-  
+
   if systemctl list-unit-files | grep -q vncserver-x11-serviced; then
     sudo systemctl enable vncserver-x11-serviced.service || true
     sudo systemctl start vncserver-x11-serviced.service || true
   fi
-  
+
   log_info "Configuring firewall for VNC (port 5900)..."
   sudo ufw allow 5900/tcp comment 'VNC Server' && log_success "VNC firewall rule added"
-  
+
   sleep 2
   if ss -tln 2>/dev/null | grep -q ':5900'; then
     log_success "VNC server running on port 5900"
@@ -779,7 +782,7 @@ setup_vnc() {
   else
     log_warning "VNC may not be running yet. Try rebooting."
   fi
-  
+
   VNC_ENABLED=1
 }
 
@@ -789,33 +792,33 @@ setup_vnc() {
 install_packages() {
   local package_list=("$@")
   [ ${#package_list[@]} -eq 0 ] && return 0
-  
+
   log_info "Installing: ${package_list[*]}"
   [ "$DRY_RUN" -eq 1 ] && return 0
-  
+
   local max_retries=3
   local attempt=1
-  
+
   while [ $attempt -le $max_retries ]; do
     if sudo apt-get install -y "${package_list[@]}"; then
       log_success "Packages installed"
       return 0
     fi
-    
+
     log_warning "Install failed (attempt $attempt/$max_retries)"
-    
+
     if [ $attempt -eq $max_retries ]; then
       log_error "Failed after $max_retries attempts"
       return 1
     fi
-    
+
     sleep 5
     sudo apt-get --fix-broken install -y || true
     sudo apt-get update -y || true
-    
+
     attempt=$((attempt + 1))
   done
-  
+
   return 1
 }
 
@@ -845,7 +848,7 @@ LAST_CHECKPOINT=$(load_checkpoint)
 
 if [ "$LAST_CHECKPOINT" != "START" ] && [ "$LAST_CHECKPOINT" != "COMPLETE" ] && [ "$FORCE_RERUN" -eq 0 ]; then
   log_warning "Previous installation interrupted at: $LAST_CHECKPOINT"
-  
+
   if prompt_yn "Resume from last checkpoint? (y/n): " y; then
     log_info "Resuming from: $LAST_CHECKPOINT"
   else
@@ -909,11 +912,11 @@ fi
 ############################################################
 if ! is_checkpoint_passed "UPDATE"; then
   log_info "Updating package lists..."
-  
+
   if [ "$DRY_RUN" -eq 0 ]; then
     sudo apt-get update -y || exit 1
   fi
-  
+
   save_checkpoint "UPDATE"
 fi
 
@@ -924,7 +927,7 @@ if ! is_checkpoint_passed "UPGRADE"; then
   if [[ "$PERF_TIER" == "MINIMAL" ]]; then
     if prompt_yn "Proceed with system upgrade? (slow) (y/n): " y; then
       log_info "Upgrading packages..."
-      
+
       if [ "$DRY_RUN" -eq 0 ]; then
         sudo apt-get upgrade -y &
         show_progress $! "Upgrading packages"
@@ -932,7 +935,7 @@ if ! is_checkpoint_passed "UPGRADE"; then
     fi
   else
     log_info "Upgrading packages..."
-    
+
     if [ "$DRY_RUN" -eq 0 ]; then
       if [[ "$PERF_TIER" == "LOW" ]]; then
         sudo apt-get upgrade -y &
@@ -942,7 +945,7 @@ if ! is_checkpoint_passed "UPGRADE"; then
       fi
     fi
   fi
-  
+
   save_checkpoint "UPGRADE"
   check_temperature
 fi
@@ -952,15 +955,15 @@ fi
 ############################################################
 if ! is_checkpoint_passed "ESSENTIAL"; then
   log_info "Installing essential packages..."
-  
+
   ESSENTIAL_PACKAGES=(
     curl wget git vim htop tree unzip
     apt-transport-https ca-certificates gnupg
     lsb-release net-tools ufw arping
   )
-  
+
   [[ "$PERF_TIER" != "MINIMAL" ]] && ESSENTIAL_PACKAGES+=(build-essential)
-  
+
   if [[ "$PERF_TIER" == "HIGH" || "$PERF_TIER" == "MEDIUM" ]]; then
     ESSENTIAL_PACKAGES+=(python3-pip python3-venv python3-dev)
   elif [[ "$PERF_TIER" == "LOW" ]]; then
@@ -968,7 +971,7 @@ if ! is_checkpoint_passed "ESSENTIAL"; then
   else
     ESSENTIAL_PACKAGES+=(python3)
   fi
-  
+
   if [[ "$PERF_TIER" == "HIGH" || "$PERF_TIER" == "MEDIUM" ]]; then
     if [[ "$PI_ARCH" != "armv6l" ]]; then
       if prompt_yn "Install Node.js? (y/n): " n; then
@@ -976,9 +979,9 @@ if ! is_checkpoint_passed "ESSENTIAL"; then
       fi
     fi
   fi
-  
+
   install_packages "${ESSENTIAL_PACKAGES[@]}" || exit 1
-  
+
   save_checkpoint "ESSENTIAL"
   check_temperature
 fi
@@ -988,7 +991,7 @@ fi
 ############################################################
 if ! is_checkpoint_passed "SECURITY"; then
   log_info "Setting up firewall..."
-  
+
   if [ "$DRY_RUN" -eq 0 ]; then
     sudo ufw default deny incoming
     sudo ufw default allow outgoing
@@ -996,13 +999,13 @@ if ! is_checkpoint_passed "SECURITY"; then
     sudo ufw --force enable
     log_success "Firewall configured"
   fi
-  
+
   if ! systemctl is-active --quiet ssh 2>/dev/null; then
     if [ "$DRY_RUN" -eq 0 ]; then
       sudo systemctl enable --now ssh
     fi
   fi
-  
+
   save_checkpoint "SECURITY"
 fi
 
@@ -1015,7 +1018,7 @@ if ! is_checkpoint_passed "VNC"; then
   else
     VNC_ENABLED=0
   fi
-  
+
   save_checkpoint "VNC"
 fi
 
@@ -1024,11 +1027,12 @@ fi
 ############################################################
 if ! is_checkpoint_passed "GIT"; then
   if prompt_yn "Configure Git? (y/n): " n; then
-    local git_username git_email
-    
+    git_username=""
+    git_email=""
+
     git_username=$(read_tty "Git username: " "")
     git_email=$(read_tty "Git email: " "")
-    
+
     if [ -n "$git_username" ] && [ -n "$git_email" ]; then
       if validate_email "$git_email"; then
         if [ "$DRY_RUN" -eq 0 ]; then
@@ -1041,7 +1045,7 @@ if ! is_checkpoint_passed "GIT"; then
       fi
     fi
   fi
-  
+
   save_checkpoint "GIT"
 fi
 
@@ -1052,27 +1056,27 @@ if ! is_checkpoint_passed "EMAIL"; then
   if [ ! -f ~/.msmtprc ]; then
     if prompt_yn "Configure email (msmtp)? (y/n): " n; then
       install_packages msmtp msmtp-mta gpg
-      
+
       mkdir -p ~/.secrets
       chmod 700 ~/.secrets
-      
-      local email_address
+
+      email_address=""
       email_address=$(read_tty "Gmail address: " "")
-      
+
       if [ -n "$email_address" ] && validate_email "$email_address"; then
         log_info "Create App Password at: https://myaccount.google.com/apppasswords"
-        
-        local app_password
+
+        app_password=""
         app_password=$(read_secure "Gmail App Password: ")
-        
+
         if [ -n "$app_password" ] && [ ${#app_password} -ge 16 ]; then
           if [ "$DRY_RUN" -eq 0 ]; then
             printf "%s" "$app_password" | gpg --batch --yes --symmetric --cipher-algo AES256 -o ~/.secrets/msmtp.gpg 2>/dev/null
             app_password=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64)
             unset app_password
-            
+
             chmod 600 ~/.secrets/msmtp.gpg
-            
+
             cat > ~/.msmtprc <<'MSMTPEOF'
 defaults
 auth           on
@@ -1090,10 +1094,10 @@ passwordeval   "gpg --quiet --batch --decrypt ~/.secrets/msmtp.gpg"
 
 account default : gmail
 MSMTPEOF
-            
+
             sed -i "s/EMAIL_PLACEHOLDER/$email_address/g" ~/.msmtprc
             chmod 600 ~/.msmtprc
-            
+
             log_info "Testing email..."
             if echo "Test from $(hostname)" | msmtp "$email_address" 2>/dev/null; then
               log_success "Email configured and tested"
@@ -1105,7 +1109,7 @@ MSMTPEOF
       fi
     fi
   fi
-  
+
   save_checkpoint "EMAIL"
 fi
 
@@ -1115,24 +1119,24 @@ fi
 if ! is_checkpoint_passed "RASPI_CONFIG"; then
   if command -v raspi-config &>/dev/null; then
     log_info "Configuring Pi-specific settings..."
-    
+
     if [ "$DRY_RUN" -eq 0 ]; then
       sudo raspi-config nonint do_expand_rootfs || true
     fi
-    
+
     if prompt_yn "Enable I2C? (y/n): " n; then
       [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_i2c 0
     fi
-    
+
     if prompt_yn "Enable SPI? (y/n): " n; then
       [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_spi 0
     fi
-    
+
     if prompt_yn "Enable Camera? (y/n): " n; then
       [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_camera 0
     fi
   fi
-  
+
   save_checkpoint "RASPI_CONFIG"
 fi
 
@@ -1142,10 +1146,10 @@ fi
 if ! is_checkpoint_passed "PYTHON"; then
   if [[ "$PERF_TIER" != "MINIMAL" ]]; then
     setup_piwheels
-    
+
     if prompt_yn "Install Python packages? (y/n): " y; then
       PYTHON_PACKAGES=()
-      
+
       if [[ "$PERF_TIER" == "LOW" ]]; then
         PYTHON_PACKAGES+=(requests RPi.GPIO)
         prompt_yn "Install Flask? (y/n): " n && PYTHON_PACKAGES+=(flask)
@@ -1155,11 +1159,11 @@ if ! is_checkpoint_passed "PYTHON"; then
       else
         PYTHON_PACKAGES+=(numpy requests flask RPi.GPIO)
       fi
-      
+
       if [ ${#PYTHON_PACKAGES[@]} -gt 0 ]; then
         if [ "$DRY_RUN" -eq 0 ]; then
           pip3 install --user --no-warn-script-location "${PYTHON_PACKAGES[@]}" || log_warning "Some packages failed"
-          
+
           if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc; then
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
           fi
@@ -1167,7 +1171,7 @@ if ! is_checkpoint_passed "PYTHON"; then
       fi
     fi
   fi
-  
+
   save_checkpoint "PYTHON"
   check_temperature
 fi
@@ -1177,7 +1181,7 @@ fi
 ############################################################
 if ! is_checkpoint_passed "PROFILE"; then
   log_info "Installing profile: $PROFILE"
-  
+
   case $PROFILE in
     web)
       if [[ "$PERF_TIER" == "MINIMAL" ]]; then
@@ -1193,7 +1197,7 @@ if ! is_checkpoint_passed "PROFILE"; then
         fi
       fi
       ;;
-      
+
     iot)
       install_packages mosquitto mosquitto-clients
       if [ "$DRY_RUN" -eq 0 ]; then
@@ -1202,7 +1206,7 @@ if ! is_checkpoint_passed "PROFILE"; then
         sudo ufw allow 1883 comment 'MQTT'
       fi
       ;;
-      
+
     media)
       if [[ "$PERF_TIER" == "MINIMAL" ]]; then
         install_packages omxplayer
@@ -1210,23 +1214,23 @@ if ! is_checkpoint_passed "PROFILE"; then
         install_packages vlc mpv ffmpeg
       fi
       ;;
-      
+
     dev)
       DEV_PACKAGES=(tmux screen)
       [[ "$PERF_TIER" != "MINIMAL" ]] && DEV_PACKAGES+=(docker.io docker-compose)
-      
+
       install_packages "${DEV_PACKAGES[@]}"
-      
+
       if [ "$DRY_RUN" -eq 0 ] && command -v docker &>/dev/null; then
         sudo usermod -aG docker "$USER"
       fi
       ;;
-      
+
     generic)
       log_info "Generic profile - no additional packages"
       ;;
   esac
-  
+
   save_checkpoint "PROFILE"
   check_temperature
 fi
@@ -1236,10 +1240,10 @@ fi
 ############################################################
 if ! is_checkpoint_passed "ALIASES"; then
   log_info "Creating directories and aliases..."
-  
+
   if [ "$DRY_RUN" -eq 0 ]; then
     mkdir -p ~/projects ~/scripts ~/backup ~/logs
-    
+
     if ! grep -q "# === Custom Aliases ===" ~/.bashrc; then
       cat >> ~/.bashrc <<'BASHEOF'
 
@@ -1256,7 +1260,7 @@ alias profile='cat ~/.rpi_setup_state'
 
 BASHEOF
     fi
-    
+
     cat > ~/scripts/sysinfo.sh <<'SYSINFOEOF'
 #!/bin/bash
 echo "=========================================="
@@ -1275,7 +1279,7 @@ echo "=========================================="
 SYSINFOEOF
     chmod +x ~/scripts/sysinfo.sh
   fi
-  
+
   save_checkpoint "ALIASES"
 fi
 
@@ -1307,7 +1311,7 @@ echo "  Model: Pi $PI_MODEL"
 echo "  Memory: ${PI_MEMORY}MB"
 echo "  Tier: $PERF_TIER"
 echo "  Profile: $PROFILE"
-echo "  VNC: $([ "$VNC_ENABLED" -eq 1 ] && echo 'Enabled (port 5900)' || echo 'Disabled')"
+echo "  VNC: $([ "${VNC_ENABLED:-0}" -eq 1 ] && echo 'Enabled (port 5900)' || echo 'Disabled')"
 echo ""
 echo "Commands:"
 echo "  sysinfo  - System information"
@@ -1315,8 +1319,7 @@ echo "  temp     - CPU temperature"
 echo "  update   - Update packages"
 echo ""
 
-if [ "$VNC_ENABLED" -eq 1 ]; then
-local vnc_ip
+if [ "${VNC_ENABLED:-0}" -eq 1 ]; then
   vnc_ip=$(hostname -I | awk '{print $1}')
   echo "VNC Connection:"
   echo "  Address: ${vnc_ip}:5900"
