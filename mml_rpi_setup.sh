@@ -946,10 +946,11 @@ acquire_lock
 
 clear
 cat << "EOF"
-╔════════════════════════════════════════╗
-║  Universal Raspberry Pi Setup Script  ║
-║     Enhanced Security Edition          ║
-╚════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════╗
+║  MML Universal Raspberry Pi Setup Script             ║
+║  Enhanced Security Edition                           ║
+║  2025-10-24 c                                        ║
+╚══════════════════════════════════════════════════════╝
 EOF
 echo ""
 log_info "Version: $SCRIPT_VERSION"
