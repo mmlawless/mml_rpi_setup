@@ -3,7 +3,7 @@ set -euo pipefail
 
 ############################################################
 # Universal Raspberry Pi Setup Script
-# Version: 2024-10-20-Secure
+# Version: 2024-10-24a
 # Features: Enhanced security, validation, VNC support,
 #           proper error handling, and comprehensive logging
 ############################################################
@@ -229,6 +229,7 @@ FORCE_RERUN=0
 DEBUG=0
 DRY_RUN=0
 ENABLE_VNC=0
+PERF_TIER="${PERF_TIER:-MEDIUM}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
