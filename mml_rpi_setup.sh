@@ -3,7 +3,7 @@ set -euo pipefail
 
 ############################################################
 # Universal Raspberry Pi Setup Script
-# Version: 2024-10-24a
+# Version: 2024-10-24b
 # Features: Enhanced security, validation, VNC support,
 #           proper error handling, and comprehensive logging
 ############################################################
