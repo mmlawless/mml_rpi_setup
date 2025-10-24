@@ -673,13 +673,116 @@ set_hostname() {
 configure_network() {
   log_info "Network configuration..."
 
+  # Determine a sensible default interface (the one used to reach the internet)
+  default_iface="$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' | head -n1)"
+  default_iface="${default_iface:-eth0}"
+
   if ! prompt_yn "Set static IPv4 address? (y/n): " n; then
     log_info "Keeping DHCP"
     return
   fi
 
-  log_info "Static IP configuration available but simplified for this version"
-  log_info "To configure manually: sudo nano /etc/dhcpcd.conf"
+  # In non-interactive mode, do not prompt further; log and exit
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then
+    log_warning "Non-interactive mode: skipping detailed static configuration. Edit /etc/dhcpcd.conf manually."
+    return
+  fi
+
+  # Ask which interface to configure
+  iface=$(read_tty "Interface to configure [${default_iface}]: " "${default_iface}")
+
+  # Ask for static IP in CIDR form (e.g. 192.168.1.50/24)
+  while true; do
+    ip_cidr=$(read_tty "Static IP address (CIDR) (e.g. 192.168.1.50/24): " "")
+    if [ -z "$ip_cidr" ]; then
+      log_warning "No IP provided, aborting static configuration"
+      return
+    fi
+    if validate_cidr "$ip_cidr"; then
+      break
+    else
+      log_warning "Invalid CIDR. Please try again."
+    fi
+  done
+
+  # Ask for gateway
+  while true; do
+    gateway=$(read_tty "Gateway (router) IP (e.g. 192.168.1.1): " "")
+    if [ -z "$gateway" ]; then
+      log_warning "No gateway provided, aborting static configuration"
+      return
+    fi
+    if validate_ip "$gateway"; then
+      break
+    else
+      log_warning "Invalid IP. Please try again."
+    fi
+  done
+
+  # Ask for DNS servers (comma-separated)
+  while true; do
+    dns=$(read_tty "DNS servers (comma-separated, default: ${gateway}): " "${gateway}")
+    # Validate first DNS only to be lenient
+    first_dns="$(echo "$dns" | awk -F, '{print $1}' | xargs)"
+    if validate_ip "$first_dns"; then
+      break
+    else
+      log_warning "Invalid DNS. Please try again."
+    fi
+  done
+
+  # Basic conflict check (needs root and arping installed)
+  if command -v arping >/dev/null 2>&1 && [ "$DRY_RUN" -eq 0 ]; then
+    ip_only="${ip_cidr%%/*}"
+    log_info "Checking for IP conflicts (arping)..."
+    if sudo arping -c 2 -w 2 -I "$iface" "$ip_only" >/dev/null 2>&1; then
+      log_warning "arping detected another host using $ip_only on $iface. Proceed with caution."
+      if ! prompt_yn "Proceed anyway? (y/n): " n; then
+        log_info "Aborting static configuration."
+        return
+      fi
+    fi
+  fi
+
+  # Prepare dhcpcd.conf changes
+  new_conf=$(cat <<EOF
+
+# Static IP configuration added by mml_rpi_setup.sh on $(date)
+interface ${iface}
+static ip_address=${ip_cidr}
+static routers=${gateway}
+static domain_name_servers=${dns}
+EOF
+)
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log_info "[DRY-RUN] Would append the following to /etc/dhcpcd.conf:"
+    echo "$new_conf"
+    return
+  fi
+
+  # Backup existing
+  if [ -f /etc/dhcpcd.conf ]; then
+    sudo cp /etc/dhcpcd.conf /etc/dhcpcd.conf.bak.$(date +%s) || {
+      log_warning "Failed to backup /etc/dhcpcd.conf"
+    }
+  fi
+
+  # Append the new config atomically
+  tmpf="$(mktemp)"
+  echo "$new_conf" > "$tmpf"
+  sudo sh -c "cat >> /etc/dhcpcd.conf" < "$tmpf" && rm -f "$tmpf"
+  log_success "Static network configuration written to /etc/dhcpcd.conf"
+
+  # Restart dhcpcd to apply (best-effort)
+  if sudo systemctl is-active --quiet dhcpcd 2>/dev/null; then
+    log_info "Restarting dhcpcd to apply changes..."
+    sudo systemctl restart dhcpcd || log_warning "Failed to restart dhcpcd automatically. Reboot may be required."
+  else
+    log_info "dhcpcd not running as service; changes will apply on next boot or when dhcpcd is started."
+  fi
+
+  log_success "Static IP configuration applied. Verify connectivity (ping ${gateway})."
 }
 
 ############################################################
