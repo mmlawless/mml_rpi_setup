@@ -3,7 +3,7 @@ set -euo pipefail
 
 ############################################################
 # Universal Raspberry Pi Setup Script
-# Version: 2024-10-24b
+# 
 # Features: Enhanced security, validation, VNC support,
 #           proper error handling, and comprehensive logging
 ############################################################
@@ -631,24 +631,46 @@ select_profile() {
 }
 
 ############################################################
-# Hostname configuration
+# Hostname configuration (modified to allow manual editing)
 ############################################################
 set_hostname() {
-  NEW_HOSTNAME="LH-PI0x-${PI_MODEL}-${PI_SERIAL}-${PROFILE_ABBREV}-FUNC-IPA"
+  # Generate a sensible default hostname
+  local generated
+  generated="LH-PI0x-${PI_MODEL}-${PI_SERIAL}-${PROFILE_ABBREV}-FUNC-IPA"
+
   CURRENT_HOSTNAME=$(hostname)
-
   log_info "Current hostname: $CURRENT_HOSTNAME"
-  log_info "Proposed hostname: $NEW_HOSTNAME"
+  log_info "Proposed hostname: $generated"
 
-  if ! validate_hostname "$NEW_HOSTNAME"; then
-    log_warning "Generated hostname invalid, using fallback"
-    NEW_HOSTNAME="rpi-${PI_SERIAL}"
-
-    if ! validate_hostname "$NEW_HOSTNAME"; then
-      NEW_HOSTNAME="$CURRENT_HOSTNAME"
-      return
+  # Offer the user the chance to edit or accept the generated hostname
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log_info "[DRY-RUN] Would prompt for hostname (defaulting to proposed)"
+    NEW_HOSTNAME="$generated"
+  elif [ "$NON_INTERACTIVE" -eq 1 ]; then
+    log_debug "Non-interactive: using proposed hostname"
+    NEW_HOSTNAME="$generated"
+  else
+    local input
+    input=$(read_tty "Enter desired hostname (leave empty to use proposed: $generated): " "")
+    if [ -n "$input" ]; then
+      if validate_hostname "$input"; then
+        NEW_HOSTNAME="$input"
+      else
+        log_warning "Entered hostname '$input' is invalid. Falling back to generated hostname."
+        NEW_HOSTNAME="$generated"
+      fi
+    else
+      NEW_HOSTNAME="$generated"
     fi
   fi
+
+  # Final validation/fallback to current hostname if still invalid
+  if ! validate_hostname "$NEW_HOSTNAME"; then
+    log_warning "Final hostname '$NEW_HOSTNAME' invalid; using current hostname"
+    NEW_HOSTNAME="$CURRENT_HOSTNAME"
+  fi
+
+  log_info "Hostname to set: $NEW_HOSTNAME"
 
   if [ "$CURRENT_HOSTNAME" = "$NEW_HOSTNAME" ]; then
     log_info "Hostname already correct"
@@ -658,7 +680,12 @@ set_hostname() {
   if prompt_yn "Set hostname to $NEW_HOSTNAME? (y/n): " y; then
     if [ "$DRY_RUN" -eq 0 ]; then
       echo "$NEW_HOSTNAME" | sudo tee /etc/hostname >/dev/null
-      sudo sed -i "s/127.0.1.1.*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts
+      # Ensure hosts file gets updated - attempt best-effort safe replace
+      if sudo grep -q "127.0.1.1" /etc/hosts 2>/dev/null; then
+        sudo sed -i "s/^127.0.1.1.*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts || true
+      else
+        echo -e "127.0.1.1\t$NEW_HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
+      fi
       sudo hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || true
       log_success "Hostname set to $NEW_HOSTNAME"
     fi
@@ -668,8 +695,60 @@ set_hostname() {
 }
 
 ############################################################
-# Network helpers
+# Network helpers (modified to allow eth0/wlan0 pairing)
 ############################################################
+
+# Increment last octet of an IPv4 address, with bounds checking.
+# Input: IPv4 address (e.g. 192.168.1.201)
+# Output: next IPv4 address (e.g. 192.168.1.202) or empty string on failure
+increment_ip_last_octet() {
+  local ip="$1"
+  if ! validate_ip "$ip"; then
+    echo ""
+    return 1
+  fi
+  IFS='.' read -r a b c d <<< "$ip"
+  if ! validate_number "$d" 0 254; then
+    echo ""
+    return 1
+  fi
+  d=$((d + 1))
+  if [ "$d" -gt 254 ]; then
+    echo ""
+    return 1
+  fi
+  echo "${a}.${b}.${c}.${d}"
+}
+
+# Check whether the given IP is already present locally (on any interface)
+is_local_ip_assigned() {
+  local ip="$1"
+  ip addr show | grep -qw "$ip"
+}
+
+# Check whether a host on network responds for this IP (using arping if available or ping fallback).
+# Returns 0 if another host is seen responding, non-zero otherwise.
+is_ip_in_use_on_network() {
+  local ip="$1"
+  local iface="$2"
+  if command -v arping >/dev/null 2>&1; then
+    # Use a short arping check; if arping exits 0 we saw a response
+    if sudo arping -c 2 -w 2 -I "${iface}" "${ip}" >/dev/null 2>&1; then
+      return 0
+    else
+      return 1
+    fi
+  else
+    # Fallback: ping once (may be blocked) and check ARP table (best-effort)
+    ping -c 1 -W 1 "$ip" >/dev/null 2>&1 || true
+    if ip neigh show | grep -wq "$ip"; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+}
+
 configure_network() {
   log_info "Network configuration..."
 
@@ -688,7 +767,149 @@ configure_network() {
     return
   fi
 
-  # Ask which interface to configure
+  # Ask whether user wants to set paired eth0/wlan0 where wlan0 = eth0 + 1
+  if prompt_yn "Configure both eth0 and wlan0 with wlan0 = eth0+1? (y/n): " y; then
+    # Configure eth0 first
+    iface="eth0"
+    while true; do
+      ip_cidr=$(read_tty "Static IP address for eth0 (CIDR) (e.g. 192.168.1.201/24): " "")
+      if [ -z "$ip_cidr" ]; then
+        log_warning "No IP provided, aborting static configuration"
+        return
+      fi
+      if validate_cidr "$ip_cidr"; then
+        break
+      else
+        log_warning "Invalid CIDR. Please try again."
+      fi
+    done
+
+    # Extract ip (without prefix)
+    ip_only="${ip_cidr%%/*}"
+
+    # Compute wlan0 IP as ip_only + 1
+    wlan_ip=$(increment_ip_last_octet "$ip_only")
+    if [ -z "$wlan_ip" ]; then
+      log_error "Could not compute wlan0 IP from $ip_only (overflow or invalid). Aborting paired setup."
+      return 1
+    fi
+
+    # Use same prefix for wlan
+    cidr_suffix="${ip_cidr#*/}"
+    wlan_cidr="${wlan_ip}/${cidr_suffix}"
+
+    # Ask for gateway and DNS
+    while true; do
+      gateway=$(read_tty "Gateway (router) IP (e.g. 192.168.1.1): " "")
+      if [ -z "$gateway" ]; then
+        log_warning "No gateway provided, aborting static configuration"
+        return
+      fi
+      if validate_ip "$gateway"; then
+        break
+      else
+        log_warning "Invalid IP. Please try again."
+      fi
+    done
+
+    while true; do
+      dns=$(read_tty "DNS servers (comma-separated, default: ${gateway}): " "${gateway}")
+      first_dns="$(echo "$dns" | awk -F, '{print $1}' | xargs)"
+      if validate_ip "$first_dns"; then
+        break
+      else
+        log_warning "Invalid DNS. Please try again."
+      fi
+    done
+
+    # Local assignment check
+    if is_local_ip_assigned "$ip_only"; then
+      log_warning "IP $ip_only already assigned to a local interface. Please verify you selected the correct address."
+      if ! prompt_yn "Proceed anyway? (y/n): " n; then
+        log_info "Aborting static configuration."
+        return
+      fi
+    fi
+    if is_local_ip_assigned "$wlan_ip"; then
+      log_warning "IP $wlan_ip already assigned to a local interface. Please verify you selected the correct address."
+      if ! prompt_yn "Proceed anyway? (y/n): " n; then
+        log_info "Aborting static configuration."
+        return
+      fi
+    fi
+
+    # Network-level conflict check using arping/ping fallback
+    if command -v arping >/dev/null 2>&1 && [ "$DRY_RUN" -eq 0 ]; then
+      log_info "Checking for IP conflicts (arping) for eth0..."
+      if is_ip_in_use_on_network "$ip_only" "eth0"; then
+        log_warning "arping detected another host using $ip_only on eth0."
+      fi
+
+      log_info "Checking for IP conflicts (arping) for wlan0..."
+      if is_ip_in_use_on_network "$wlan_ip" "wlan0"; then
+        log_warning "arping detected another host using $wlan_ip on wlan0."
+      fi
+
+      if prompt_yn "Proceed with configuration despite conflict warnings? (y/n): " n; then
+        log_info "Proceeding per user confirmation."
+      else
+        log_info "Aborting static configuration due to conflicts."
+        return
+      fi
+    fi
+
+    # Prepare dhcpcd.conf changes for both interfaces
+    new_conf=$(cat <<EOF
+
+# Static IP configuration added by mml_rpi_setup.sh on $(date)
+interface eth0
+static ip_address=${ip_cidr}
+static routers=${gateway}
+static domain_name_servers=${dns}
+
+interface wlan0
+static ip_address=${wlan_cidr}
+static routers=${gateway}
+static domain_name_servers=${dns}
+EOF
+)
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log_info "[DRY-RUN] Would append the following to /etc/dhcpcd.conf:"
+      echo "$new_conf"
+      return
+    fi
+
+    # Backup existing
+    if [ -f /etc/dhcpcd.conf ]; then
+      sudo cp /etc/dhcpcd.conf /etc/dhcpcd.conf.bak.$(date +%s) || {
+        log_warning "Failed to backup /etc/dhcpcd.conf"
+      }
+    fi
+
+    # Append the new config atomically
+    tmpf="$(mktemp)"
+    echo "$new_conf" > "$tmpf"
+    sudo sh -c "cat >> /etc/dhcpcd.conf" < "$tmpf" && rm -f "$tmpf"
+    log_success "Static network configuration for eth0 and wlan0 written to /etc/dhcpcd.conf"
+
+    # Restart dhcpcd to apply (best-effort)
+    if sudo systemctl is-active --quiet dhcpcd 2>/dev/null; then
+      log_info "Restarting dhcpcd to apply changes..."
+      sudo systemctl restart dhcpcd || log_warning "Failed to restart dhcpcd automatically. Reboot may be required."
+    else
+      log_info "dhcpcd not running as service; changes will apply on next boot or when dhcpcd is started."
+    fi
+
+    log_success "Static IP configuration applied. Verify connectivity (ping ${gateway})."
+    log_info "Configured eth0: ${ip_cidr}"
+    log_info "Configured wlan0: ${wlan_cidr}"
+
+    return
+  fi
+
+  # If user did not choose paired eth0/wlan0, fall back to the previous single-interface flow
+  echo ""
   iface=$(read_tty "Interface to configure [${default_iface}]: " "${default_iface}")
 
   # Ask for static IP in CIDR form (e.g. 192.168.1.50/24)
@@ -949,7 +1170,7 @@ cat << "EOF"
 ╔══════════════════════════════════════════════════════╗
 ║  MML Universal Raspberry Pi Setup Script             ║
 ║  Enhanced Security Edition                           ║
-║  2025-10-24 c                                        ║
+║  2025-10-24 d                                        ║
 ╚══════════════════════════════════════════════════════╝
 EOF
 echo ""
