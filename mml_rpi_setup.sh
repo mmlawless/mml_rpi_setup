@@ -3,12 +3,14 @@ set -euo pipefail
 
 ############################################################
 # Universal Raspberry Pi Setup Script
-# 
+#
 # Features: Enhanced security, validation, VNC support,
 #           proper error handling, and comprehensive logging
+#           + Robust static IP config (NM/dhcpcd, per-IF)
+#           + Solid msmtp Gmail App Password flow
 ############################################################
 
-SCRIPT_VERSION="2024-10-20-Secure"
+SCRIPT_VERSION="2025-10-24-Universal-Secure"
 SCRIPT_HASH="PLACEHOLDER_HASH"
 
 # File paths
@@ -25,7 +27,6 @@ cleanup() {
   sudo -k 2>/dev/null || true
   rm -f "$LOCK_FILE"
 
-  # Use parameter expansion defaults in case colors are not set
   echo -e "${RED:-}[ERROR]${NC:-} Script exited with error code $exit_code" >&2
   if [ $exit_code -ne 0 ]; then
     echo -e "${RED:-}[ERROR]${NC:-} Check log file: $LOG_FILE" >&2
@@ -128,10 +129,8 @@ validate_hostname() {
 validate_ip() {
   local ip="$1"
   [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
-
   local IFS='.'
   local -a octets=($ip)
-
   for octet in "${octets[@]}"; do
     [ "$octet" -gt 255 ] && return 1
   done
@@ -146,10 +145,8 @@ validate_email() {
 validate_cidr() {
   local cidr="$1"
   [[ "$cidr" =~ ^([0-9.]+)/([0-9]+)$ ]] || return 1
-
   local ip="${BASH_REMATCH[1]}"
   local prefix="${BASH_REMATCH[2]}"
-
   validate_ip "$ip" || return 1
   validate_number "$prefix" 0 32
 }
@@ -162,7 +159,6 @@ atomic_write() {
   local content="$2"
   local mode="${3:-600}"
   local tmp
-
   tmp=$(mktemp "${target}.XXXXXX")
   echo "$content" > "$tmp"
   chmod "$mode" "$tmp"
@@ -185,14 +181,11 @@ setup_locale() {
     if sudo apt-get update -y && sudo apt-get install -y locales; then
       break
     fi
-
     log_warning "Locale package installation failed (attempt $attempt/$max_retries)"
-
     if [ $attempt -eq $max_retries ]; then
       log_error "Failed to install locales package"
       return 1
     fi
-
     sleep 5
     attempt=$((attempt + 1))
   done
@@ -231,16 +224,14 @@ DRY_RUN=0
 ENABLE_VNC=0
 PERF_TIER="${PERF_TIER:-MEDIUM}"
 
-# Ensure Pi-related variables are always defined (avoid set -u unbound errors)
+# Ensure Pi-related variables are always defined
 PI_MODEL="${PI_MODEL:-unknown}"
 PI_MEMORY="${PI_MEMORY:-0}"
 PI_ARCH="${PI_ARCH:-$(uname -m)}"
 PI_SERIAL="${PI_SERIAL:-UNKNOWN}"
-# Ensure hostname variable exists (previous fix)
 NEW_HOSTNAME="${NEW_HOSTNAME:-$(hostname)}"
 
-
-# Ensure NEW_HOSTNAME is always defined (avoid unbound variable with set -u)
+# Ensure NEW_HOSTNAME is always defined
 NEW_HOSTNAME="$(hostname)"
 
 while [[ $# -gt 0 ]]; do
@@ -272,7 +263,6 @@ done
 
 prompt_yn() {
   local question="$1" default="${2:-n}" ans
-
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would prompt: '$question' (defaulting to $default)"
     ans="$default"
@@ -289,19 +279,16 @@ prompt_yn() {
     log_debug "Non-interactive: defaulting '$question' to $default"
     ans="$default"
   fi
-
   [[ "$ans" =~ ^[Yy]$ ]]
 }
 
 read_tty() {
   local prompt="$1" var default="${2:-}"
-
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would prompt: '$prompt'"
     echo "$default"
     return
   fi
-
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
     echo "$default"
   elif [ "$IS_TTY" -eq 1 ]; then
@@ -318,18 +305,15 @@ read_tty() {
 
 read_secure() {
   local prompt="$1" var
-
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would prompt for secure input"
     echo "dummy_password"
     return
   fi
-
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
     log_error "Cannot read secure input in non-interactive mode"
     return 1
   fi
-
   if [ "$IS_TTY" -eq 1 ]; then
     if [ -r /dev/tty ]; then
       read -rs -p "$prompt" var < /dev/tty || var=""
@@ -440,7 +424,6 @@ SCRIPT_VERSION=$SCRIPT_VERSION
 VNC_ENABLED=${VNC_ENABLED:-0}
 EOF
 )
-
   atomic_write "$STATE_FILE" "$state_content" 600
   log_debug "State saved"
 }
@@ -448,6 +431,7 @@ EOF
 load_state() {
   if [ -f "$STATE_FILE" ]; then
     if grep -q '^[A-Z_]*=' "$STATE_FILE"; then
+      # shellcheck disable=SC1090
       source "$STATE_FILE"
       return 0
     fi
@@ -474,7 +458,6 @@ detect_pi_info() {
   if [ -f /proc/device-tree/model ]; then
     local model_string
     model_string=$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo "")
-
     case "$model_string" in
       *"Pi Zero"*|*"Pi 0"*) PI_MODEL="0" ;;
       *"Pi 5"*) PI_MODEL="5" ;;
@@ -514,7 +497,6 @@ set_performance_tier() {
   else
     PERF_TIER="MEDIUM"
   fi
-
   log_info "Performance tier: $PERF_TIER"
 }
 
@@ -538,15 +520,8 @@ set_profile_abbrev() {
 select_pi_model() {
   if [ -n "$PRESET_TIER" ]; then
     case "$PRESET_TIER" in
-      MINIMAL|LOW|MEDIUM|HIGH)
-        PERF_TIER="$PRESET_TIER"
-        log_info "Using preset tier: $PERF_TIER"
-        return
-        ;;
-      *)
-        log_error "Invalid preset tier: $PRESET_TIER"
-        exit 1
-        ;;
+      MINIMAL|LOW|MEDIUM|HIGH) PERF_TIER="$PRESET_TIER"; log_info "Using preset tier: $PERF_TIER"; return ;;
+      *) log_error "Invalid preset tier: $PRESET_TIER"; exit 1 ;;
     esac
   fi
 
@@ -590,16 +565,8 @@ select_pi_model() {
 select_profile() {
   if [ -n "$PRESET_PROFILE" ]; then
     case "$PRESET_PROFILE" in
-      generic|web|iot|media|dev)
-        PROFILE="$PRESET_PROFILE"
-        set_profile_abbrev
-        log_info "Using preset profile: $PROFILE"
-        return
-        ;;
-      *)
-        log_error "Invalid preset profile: $PRESET_PROFILE"
-        exit 1
-        ;;
+      generic|web|iot|media|dev) PROFILE="$PRESET_PROFILE"; set_profile_abbrev; log_info "Using preset profile: $PROFILE"; return ;;
+      *) log_error "Invalid preset profile: $PRESET_PROFILE"; exit 1 ;;
     esac
   fi
 
@@ -631,10 +598,9 @@ select_profile() {
 }
 
 ############################################################
-# Hostname configuration (modified to allow manual editing)
+# Hostname configuration
 ############################################################
 set_hostname() {
-  # Generate a sensible default hostname
   local generated
   generated="LH-PI0x-${PI_MODEL}-${PI_SERIAL}-${PROFILE_ABBREV}-FUNC-IPA"
 
@@ -642,7 +608,6 @@ set_hostname() {
   log_info "Current hostname: $CURRENT_HOSTNAME"
   log_info "Proposed hostname: $generated"
 
-  # Offer the user the chance to edit or accept the generated hostname
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would prompt for hostname (defaulting to proposed)"
     NEW_HOSTNAME="$generated"
@@ -664,7 +629,6 @@ set_hostname() {
     fi
   fi
 
-  # Final validation/fallback to current hostname if still invalid
   if ! validate_hostname "$NEW_HOSTNAME"; then
     log_warning "Final hostname '$NEW_HOSTNAME' invalid; using current hostname"
     NEW_HOSTNAME="$CURRENT_HOSTNAME"
@@ -680,7 +644,6 @@ set_hostname() {
   if prompt_yn "Set hostname to $NEW_HOSTNAME? (y/n): " y; then
     if [ "$DRY_RUN" -eq 0 ]; then
       echo "$NEW_HOSTNAME" | sudo tee /etc/hostname >/dev/null
-      # Ensure hosts file gets updated - attempt best-effort safe replace
       if sudo grep -q "127.0.1.1" /etc/hosts 2>/dev/null; then
         sudo sed -i "s/^127.0.1.1.*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts || true
       else
@@ -695,51 +658,36 @@ set_hostname() {
 }
 
 ############################################################
-# Network helpers (modified to allow eth0/wlan0 pairing)
+# Network helpers & Static IP configuration (UPDATED)
 ############################################################
 
-# Increment last octet of an IPv4 address, with bounds checking.
-# Input: IPv4 address (e.g. 192.168.1.201)
-# Output: next IPv4 address (e.g. 192.168.1.202) or empty string on failure
+# Increment last octet of IPv4 (bounds-checked)
 increment_ip_last_octet() {
   local ip="$1"
-  if ! validate_ip "$ip"; then
-    echo ""
-    return 1
-  fi
+  if ! validate_ip "$ip"; then echo ""; return 1; fi
   IFS='.' read -r a b c d <<< "$ip"
-  if ! validate_number "$d" 0 254; then
-    echo ""
-    return 1
-  fi
+  if ! validate_number "$d" 0 254; then echo ""; return 1; fi
   d=$((d + 1))
-  if [ "$d" -gt 254 ]; then
-    echo ""
-    return 1
-  fi
+  [ "$d" -gt 254 ] && { echo ""; return 1; }
   echo "${a}.${b}.${c}.${d}"
 }
 
-# Check whether the given IP is already present locally (on any interface)
+# Is IP locally assigned?
 is_local_ip_assigned() {
   local ip="$1"
   ip addr show | grep -qw "$ip"
 }
 
-# Check whether a host on network responds for this IP (using arping if available or ping fallback).
-# Returns 0 if another host is seen responding, non-zero otherwise.
+# Is IP in use on L2 (arping) or via ARP table
 is_ip_in_use_on_network() {
-  local ip="$1"
-  local iface="$2"
+  local ip="$1" iface="$2"
   if command -v arping >/dev/null 2>&1; then
-    # Use a short arping check; if arping exits 0 we saw a response
     if sudo arping -c 2 -w 2 -I "${iface}" "${ip}" >/dev/null 2>&1; then
       return 0
     else
       return 1
     fi
   else
-    # Fallback: ping once (may be blocked) and check ARP table (best-effort)
     ping -c 1 -W 1 "$ip" >/dev/null 2>&1 || true
     if ip neigh show | grep -wq "$ip"; then
       return 0
@@ -749,261 +697,213 @@ is_ip_in_use_on_network() {
   fi
 }
 
+# NEW: Interface utilities
+iface_exists() { ip link show dev "$1" >/dev/null 2>&1; }
+iface_is_wireless() { [ -d "/sys/class/net/$1/wireless" ]; }
+first_wireless_iface() {
+  for i in /sys/class/net/*; do
+    i="${i##*/}"
+    [ "$i" = "lo" ] && continue
+    iface_is_wireless "$i" && echo "$i" && return 0
+  done
+  return 1
+}
+iface_managed_by_nm() {
+  nmcli -t -f DEVICE,STATE dev status 2>/dev/null \
+    | awk -F: -v I="$1" '$1==I{ s=tolower($2); if (s!="unmanaged" && s!="unavailable") print "yes"; }' \
+    | grep -q yes
+}
+nm_conn_for_iface() {
+  local ifc="$1" name
+  name="$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | awk -F: -v I="$ifc" '$2==I{print $1; exit}')"
+  [ -z "$name" ] && name="$(nmcli -t -f NAME,DEVICE con show 2>/dev/null | awk -F: -v I="$ifc" '$2==I{print $1; exit}')"
+  echo "$name"
+}
+normalize_dns() { echo "$1" | tr ',' ' ' | xargs; } # commas -> spaces, trim
+
+# Remove prior rpi-setup blocks for a specific iface from dhcpcd.conf
+dhcpcd_remove_iface_block() {
+  local IFACE="$1"
+  sudo sed -i "/^# --- RPI_SETUP START: IFACE=${IFACE} ---/,/^# --- RPI_SETUP END: IFACE=${IFACE} ---/d" /etc/dhcpcd.conf
+}
+
+apply_static_nm() {
+  local IFACE="$1" ADDR="$2" GW="$3" DNS="$4"
+  local cname
+  cname="$(nm_conn_for_iface "$IFACE")"
+  if [ -n "$cname" ]; then
+    log_info "Applying static IP to NM connection '$cname' ($IFACE)"
+    nmcli con mod "$cname" ipv4.addresses "$ADDR" ipv4.gateway "$GW" ipv4.dns "$DNS" ipv4.method manual ipv6.method ignore || log_warning "Failed to modify $cname"
+    # Bring down/up for ethernet; for wifi only if it already has credentials
+    if ! iface_is_wireless "$IFACE"; then
+      nmcli con down "$cname" >/dev/null 2>&1 || true
+      nmcli con up "$cname"   >/dev/null 2>&1 || true
+    else
+      nmcli con reload >/dev/null 2>&1 || true
+    fi
+    log_success "Static IP set via NetworkManager for $IFACE: $ADDR"
+  else
+    log_warning "No NM connection bound to $IFACE; skipping NM config for it."
+  fi
+}
+
+apply_static_dhcpcd() {
+  local IFACE="$1" ADDR="$2" GW="$3" DNS="$4"
+  [ -f /etc/dhcpcd.conf ] && sudo cp /etc/dhcpcd.conf /etc/dhcpcd.conf.bak.$(date +%s) || true
+  dhcpcd_remove_iface_block "$IFACE"
+  local block
+  block=$(cat <<EOF
+
+# --- RPI_SETUP START: IFACE=${IFACE} ---
+# Static IP configuration added by mml_rpi_setup.sh on $(date)
+interface ${IFACE}
+static ip_address=${ADDR}
+static routers=${GW}
+static domain_name_servers=${DNS}
+# --- RPI_SETUP END: IFACE=${IFACE} ---
+
+EOF
+)
+  local tmpf
+  tmpf="$(mktemp)"; echo "$block" >"$tmpf"
+  sudo sh -c "cat >> /etc/dhcpcd.conf" <"$tmpf"; rm -f "$tmpf"
+  if systemctl is-active --quiet dhcpcd 2>/dev/null; then
+    log_info "Restarting dhcpcd..."
+    sudo systemctl restart dhcpcd || log_warning "Failed to restart dhcpcd. Reboot may be required."
+  else
+    log_warning "dhcpcd service not active; ensure your OS uses dhcpcd for $IFACE."
+  fi
+  log_success "Static IP set for ${IFACE} via dhcpcd: ${ADDR}"
+}
+
 configure_network() {
   log_info "Network configuration..."
 
-  # Determine a sensible default interface (the one used to reach the internet)
+  # Discover default routed iface
+  local default_iface
   default_iface="$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' | head -n1)"
   default_iface="${default_iface:-eth0}"
+
+  # Detect Ethernet + optional Wireless
+  local ETH_IF WLAN_IF
+  ETH_IF="$default_iface"; iface_exists "$ETH_IF" || ETH_IF="eth0"; iface_exists "$ETH_IF" || ETH_IF=""
+  WLAN_IF="$(first_wireless_iface || true)"  # empty if none
+  local CAN_PAIRED=0; [ -n "$ETH_IF" ] && [ -n "$WLAN_IF" ] && CAN_PAIRED=1
 
   if ! prompt_yn "Set static IPv4 address? (y/n): " n; then
     log_info "Keeping DHCP"
     return
   fi
-
-  # In non-interactive mode, do not prompt further; log and exit
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
-    log_warning "Non-interactive mode: skipping detailed static configuration. Edit /etc/dhcpcd.conf manually."
+    log_warning "Non-interactive mode: skipping static configuration."
     return
   fi
 
-  # Ask whether user wants to set paired eth0/wlan0 where wlan0 = eth0 + 1
-  if prompt_yn "Configure both eth0 and wlan0 with wlan0 = eth0+1? (y/n): " y; then
-    # Configure eth0 first
-    iface="eth0"
+  # Paired mode (only if both exist)
+  if [ "$CAN_PAIRED" -eq 1 ] && prompt_yn "Configure both $ETH_IF and $WLAN_IF with $WLAN_IF = $ETH_IF+1? (y/n): " y; then
+    local ip_cidr ip_only cidr_suffix wlan_ip wlan_cidr gateway dns dns_norm first_dns
     while true; do
-      ip_cidr=$(read_tty "Static IP address for eth0 (CIDR) (e.g. 192.168.1.201/24): " "")
-      if [ -z "$ip_cidr" ]; then
-        log_warning "No IP provided, aborting static configuration"
-        return
-      fi
-      if validate_cidr "$ip_cidr"; then
-        break
-      else
-        log_warning "Invalid CIDR. Please try again."
-      fi
+      ip_cidr=$(read_tty "Static IP for ${ETH_IF} (CIDR, e.g. 192.168.1.201/24): " "")
+      [ -z "$ip_cidr" ] && { log_warning "No IP provided, aborting static configuration"; return; }
+      validate_cidr "$ip_cidr" && break || log_warning "Invalid CIDR. Please try again."
     done
-
-    # Extract ip (without prefix)
     ip_only="${ip_cidr%%/*}"
-
-    # Compute wlan0 IP as ip_only + 1
-    wlan_ip=$(increment_ip_last_octet "$ip_only")
-    if [ -z "$wlan_ip" ]; then
-      log_error "Could not compute wlan0 IP from $ip_only (overflow or invalid). Aborting paired setup."
-      return 1
-    fi
-
-    # Use same prefix for wlan
     cidr_suffix="${ip_cidr#*/}"
+
+    wlan_ip="$(increment_ip_last_octet "$ip_only")"
+    [ -z "$wlan_ip" ] && { log_error "Failed to compute ${WLAN_IF} IP (overflow/invalid)"; return 1; }
     wlan_cidr="${wlan_ip}/${cidr_suffix}"
 
-    # Ask for gateway and DNS
     while true; do
       gateway=$(read_tty "Gateway (router) IP (e.g. 192.168.1.1): " "")
-      if [ -z "$gateway" ]; then
-        log_warning "No gateway provided, aborting static configuration"
-        return
-      fi
-      if validate_ip "$gateway"; then
-        break
-      else
-        log_warning "Invalid IP. Please try again."
-      fi
+      [ -z "$gateway" ] && { log_warning "No gateway provided, aborting"; return; }
+      validate_ip "$gateway" && break || log_warning "Invalid IP. Try again."
     done
-
     while true; do
-      dns=$(read_tty "DNS servers (comma-separated, default: ${gateway}): " "${gateway}")
-      first_dns="$(echo "$dns" | awk -F, '{print $1}' | xargs)"
-      if validate_ip "$first_dns"; then
-        break
-      else
-        log_warning "Invalid DNS. Please try again."
-      fi
+      dns=$(read_tty "DNS servers (comma/space separated, default: ${gateway}): " "${gateway}")
+      dns_norm="$(normalize_dns "$dns")"
+      first_dns="$(echo "$dns_norm" | awk '{print $1}')"
+      validate_ip "$first_dns" && break || log_warning "Invalid DNS. Try again."
     done
 
-    # Local assignment check
+    # Conflict checks (optional best-effort)
     if is_local_ip_assigned "$ip_only"; then
-      log_warning "IP $ip_only already assigned to a local interface. Please verify you selected the correct address."
-      if ! prompt_yn "Proceed anyway? (y/n): " n; then
-        log_info "Aborting static configuration."
-        return
-      fi
+      log_warning "IP $ip_only already assigned locally."
+      prompt_yn "Proceed anyway? (y/n): " n || { log_info "Aborting."; return; }
     fi
     if is_local_ip_assigned "$wlan_ip"; then
-      log_warning "IP $wlan_ip already assigned to a local interface. Please verify you selected the correct address."
-      if ! prompt_yn "Proceed anyway? (y/n): " n; then
-        log_info "Aborting static configuration."
-        return
-      fi
+      log_warning "IP $wlan_ip already assigned locally."
+      prompt_yn "Proceed anyway? (y/n): " n || { log_info "Aborting."; return; }
+    fi
+    if command -v arping >/dev/null 2>&1; then
+      log_info "Checking for IP conflicts (arping) for $ETH_IF..."
+      is_ip_in_use_on_network "$ip_only" "$ETH_IF" && log_warning "Another host may be using $ip_only on $ETH_IF."
+      log_info "Checking for IP conflicts (arping) for $WLAN_IF..."
+      is_ip_in_use_on_network "$wlan_ip" "$WLAN_IF" && log_warning "Another host may be using $wlan_ip on $WLAN_IF."
+      prompt_yn "Proceed with configuration despite warnings? (y/n): " y || { log_info "Aborting."; return; }
     fi
 
-    # Network-level conflict check using arping/ping fallback
-    if command -v arping >/dev/null 2>&1 && [ "$DRY_RUN" -eq 0 ]; then
-      log_info "Checking for IP conflicts (arping) for eth0..."
-      if is_ip_in_use_on_network "$ip_only" "eth0"; then
-        log_warning "arping detected another host using $ip_only on eth0."
-      fi
+    # Apply per-interface using responsible manager
+    local NM_ACTIVE=0; systemctl is-active --quiet NetworkManager 2>/dev/null && NM_ACTIVE=1
 
-      log_info "Checking for IP conflicts (arping) for wlan0..."
-      if is_ip_in_use_on_network "$wlan_ip" "wlan0"; then
-        log_warning "arping detected another host using $wlan_ip on wlan0."
-      fi
+    if [ $NM_ACTIVE -eq 1 ] && iface_managed_by_nm "$ETH_IF"; then
+      apply_static_nm "$ETH_IF" "$ip_cidr" "$gateway" "$dns_norm"
+    else
+      apply_static_dhcpcd "$ETH_IF" "$ip_cidr" "$gateway" "$dns_norm"
+    fi
 
-      if prompt_yn "Proceed with configuration despite conflict warnings? (y/n): " n; then
-        log_info "Proceeding per user confirmation."
+    if [ $NM_ACTIVE -eq 1 ] && iface_managed_by_nm "$WLAN_IF"; then
+      # Only modify if an NM Wi-Fi connection exists (don’t create placeholder)
+      local cname; cname="$(nm_conn_for_iface "$WLAN_IF")"
+      if [ -n "$cname" ]; then
+        apply_static_nm "$WLAN_IF" "$wlan_cidr" "$gateway" "$dns_norm"
       else
-        log_info "Aborting static configuration due to conflicts."
-        return
+        log_warning "No existing NM Wi-Fi connection on $WLAN_IF; skipping static config for Wi-Fi. Add Wi-Fi, then re-run."
       fi
-    fi
-
-    # Prepare dhcpcd.conf changes for both interfaces
-    new_conf=$(cat <<EOF
-
-# Static IP configuration added by mml_rpi_setup.sh on $(date)
-interface eth0
-static ip_address=${ip_cidr}
-static routers=${gateway}
-static domain_name_servers=${dns}
-
-interface wlan0
-static ip_address=${wlan_cidr}
-static routers=${gateway}
-static domain_name_servers=${dns}
-EOF
-)
-
-    if [ "$DRY_RUN" -eq 1 ]; then
-      log_info "[DRY-RUN] Would append the following to /etc/dhcpcd.conf:"
-      echo "$new_conf"
-      return
-    fi
-
-    # Backup existing
-    if [ -f /etc/dhcpcd.conf ]; then
-      sudo cp /etc/dhcpcd.conf /etc/dhcpcd.conf.bak.$(date +%s) || {
-        log_warning "Failed to backup /etc/dhcpcd.conf"
-      }
-    fi
-
-    # Append the new config atomically
-    tmpf="$(mktemp)"
-    echo "$new_conf" > "$tmpf"
-    sudo sh -c "cat >> /etc/dhcpcd.conf" < "$tmpf" && rm -f "$tmpf"
-    log_success "Static network configuration for eth0 and wlan0 written to /etc/dhcpcd.conf"
-
-    # Restart dhcpcd to apply (best-effort)
-    if sudo systemctl is-active --quiet dhcpcd 2>/dev/null; then
-      log_info "Restarting dhcpcd to apply changes..."
-      sudo systemctl restart dhcpcd || log_warning "Failed to restart dhcpcd automatically. Reboot may be required."
     else
-      log_info "dhcpcd not running as service; changes will apply on next boot or when dhcpcd is started."
+      apply_static_dhcpcd "$WLAN_IF" "$wlan_cidr" "$gateway" "$dns_norm"
     fi
 
-    log_success "Static IP configuration applied. Verify connectivity (ping ${gateway})."
-    log_info "Configured eth0: ${ip_cidr}"
-    log_info "Configured wlan0: ${wlan_cidr}"
-
+    log_info "Configured $ETH_IF:  ${ip_cidr}"
+    log_info "Configured $WLAN_IF: ${wlan_cidr}"
     return
   fi
 
-  # If user did not choose paired eth0/wlan0, fall back to the previous single-interface flow
-  echo ""
-  iface=$(read_tty "Interface to configure [${default_iface}]: " "${default_iface}")
+  # Single-interface flow
+  local iface ip_cidr gateway dns dns_norm first_dns
+  local prompt_default="${ETH_IF:-$default_iface}"
+  iface=$(read_tty "Interface to configure [${prompt_default}]: " "${prompt_default}")
+  iface_exists "$iface" || { log_error "Interface $iface not found"; return 1; }
 
-  # Ask for static IP in CIDR form (e.g. 192.168.1.50/24)
   while true; do
-    ip_cidr=$(read_tty "Static IP address (CIDR) (e.g. 192.168.1.50/24): " "")
-    if [ -z "$ip_cidr" ]; then
-      log_warning "No IP provided, aborting static configuration"
-      return
-    fi
-    if validate_cidr "$ip_cidr"; then
-      break
-    else
-      log_warning "Invalid CIDR. Please try again."
-    fi
+    ip_cidr=$(read_tty "Static IP (CIDR, e.g. 192.168.1.50/24): " "")
+    [ -z "$ip_cidr" ] && { log_warning "No IP provided, aborting"; return; }
+    validate_cidr "$ip_cidr" && break || log_warning "Invalid CIDR. Try again."
+  done
+  while true; do
+    gateway=$(read_tty "Gateway (e.g. 192.168.1.1): " "")
+    [ -z "$gateway" ] && { log_warning "No gateway provided, aborting"; return; }
+    validate_ip "$gateway" && break || log_warning "Invalid IP. Try again."
+  done
+  while true; do
+    dns=$(read_tty "DNS servers (comma/space separated, default: ${gateway}): " "${gateway}")
+    dns_norm="$(normalize_dns "$dns")"
+    first_dns="$(echo "$dns_norm" | awk '{print $1}')"
+    validate_ip "$first_dns" && break || log_warning "Invalid DNS. Try again."
   done
 
-  # Ask for gateway
-  while true; do
-    gateway=$(read_tty "Gateway (router) IP (e.g. 192.168.1.1): " "")
-    if [ -z "$gateway" ]; then
-      log_warning "No gateway provided, aborting static configuration"
-      return
-    fi
-    if validate_ip "$gateway"; then
-      break
+  local NM_ACTIVE=0; systemctl is-active --quiet NetworkManager 2>/dev/null && NM_ACTIVE=1
+  if [ $NM_ACTIVE -eq 1 ] && iface_managed_by_nm "$iface"; then
+    # Only modify existing NM connection; don’t create placeholder Wi-Fi
+    local cname; cname="$(nm_conn_for_iface "$iface")"
+    if [ -n "$cname" ]; then
+      apply_static_nm "$iface" "$ip_cidr" "$gateway" "$dns_norm"
     else
-      log_warning "Invalid IP. Please try again."
+      log_warning "No NM connection for $iface; cannot set static via NM. Use dhcpcd or create a real NM connection first."
     fi
-  done
-
-  # Ask for DNS servers (comma-separated)
-  while true; do
-    dns=$(read_tty "DNS servers (comma-separated, default: ${gateway}): " "${gateway}")
-    # Validate first DNS only to be lenient
-    first_dns="$(echo "$dns" | awk -F, '{print $1}' | xargs)"
-    if validate_ip "$first_dns"; then
-      break
-    else
-      log_warning "Invalid DNS. Please try again."
-    fi
-  done
-
-  # Basic conflict check (needs root and arping installed)
-  if command -v arping >/dev/null 2>&1 && [ "$DRY_RUN" -eq 0 ]; then
-    ip_only="${ip_cidr%%/*}"
-    log_info "Checking for IP conflicts (arping)..."
-    if sudo arping -c 2 -w 2 -I "$iface" "$ip_only" >/dev/null 2>&1; then
-      log_warning "arping detected another host using $ip_only on $iface. Proceed with caution."
-      if ! prompt_yn "Proceed anyway? (y/n): " n; then
-        log_info "Aborting static configuration."
-        return
-      fi
-    fi
-  fi
-
-  # Prepare dhcpcd.conf changes
-  new_conf=$(cat <<EOF
-
-# Static IP configuration added by mml_rpi_setup.sh on $(date)
-interface ${iface}
-static ip_address=${ip_cidr}
-static routers=${gateway}
-static domain_name_servers=${dns}
-EOF
-)
-
-  if [ "$DRY_RUN" -eq 1 ]; then
-    log_info "[DRY-RUN] Would append the following to /etc/dhcpcd.conf:"
-    echo "$new_conf"
-    return
-  fi
-
-  # Backup existing
-  if [ -f /etc/dhcpcd.conf ]; then
-    sudo cp /etc/dhcpcd.conf /etc/dhcpcd.conf.bak.$(date +%s) || {
-      log_warning "Failed to backup /etc/dhcpcd.conf"
-    }
-  fi
-
-  # Append the new config atomically
-  tmpf="$(mktemp)"
-  echo "$new_conf" > "$tmpf"
-  sudo sh -c "cat >> /etc/dhcpcd.conf" < "$tmpf" && rm -f "$tmpf"
-  log_success "Static network configuration written to /etc/dhcpcd.conf"
-
-  # Restart dhcpcd to apply (best-effort)
-  if sudo systemctl is-active --quiet dhcpcd 2>/dev/null; then
-    log_info "Restarting dhcpcd to apply changes..."
-    sudo systemctl restart dhcpcd || log_warning "Failed to restart dhcpcd automatically. Reboot may be required."
   else
-    log_info "dhcpcd not running as service; changes will apply on next boot or when dhcpcd is started."
+    apply_static_dhcpcd "$iface" "$ip_cidr" "$gateway" "$dns_norm"
   fi
-
-  log_success "Static IP configuration applied. Verify connectivity (ping ${gateway})."
 }
 
 ############################################################
@@ -1011,24 +911,19 @@ EOF
 ############################################################
 setup_swap() {
   [ "$PI_MEMORY" -gt 512 ] && return
-
   log_info "Low memory detected. Checking swap..."
-
   local current_swap
   current_swap=$(free -m | awk '/^Swap:/ {print $2}')
-
   [ "$current_swap" -ge 1024 ] && return
 
   if prompt_yn "Increase swap to 1024MB? (y/n): " y; then
     if [ "$DRY_RUN" -eq 0 ]; then
       sudo dphys-swapfile swapoff 2>/dev/null || true
-
       if [ -f /etc/dphys-swapfile ]; then
         sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
       else
         echo "CONF_SWAPSIZE=1024" | sudo tee /etc/dphys-swapfile >/dev/null
       fi
-
       sudo dphys-swapfile setup && sudo dphys-swapfile swapon
       log_success "Swap increased to 1024MB"
     fi
@@ -1040,18 +935,13 @@ setup_swap() {
 ############################################################
 setup_piwheels() {
   log_info "Configuring piwheels..."
-
   [ "$DRY_RUN" -eq 1 ] && return
-
   mkdir -p ~/.pip
-
   [ -f ~/.pip/pip.conf ] && grep -q "piwheels" ~/.pip/pip.conf && return
-
   cat > ~/.pip/pip.conf <<'EOF'
 [global]
 extra-index-url=https://www.piwheels.org/simple
 EOF
-
   chmod 600 ~/.pip/pip.conf
   log_success "Piwheels configured"
 }
@@ -1084,7 +974,6 @@ show_progress() {
 ############################################################
 setup_vnc() {
   log_info "Setting up VNC server..."
-
   if [ "$DRY_RUN" -eq 1 ]; then
     log_info "[DRY-RUN] Would install and configure VNC"
     return
@@ -1141,18 +1030,14 @@ install_packages() {
       log_success "Packages installed"
       return 0
     fi
-
     log_warning "Install failed (attempt $attempt/$max_retries)"
-
     if [ $attempt -eq $max_retries ]; then
       log_error "Failed after $max_retries attempts"
       return 1
     fi
-
     sleep 5
     sudo apt-get --fix-broken install -y || true
     sudo apt-get update -y || true
-
     attempt=$((attempt + 1))
   done
 
@@ -1170,7 +1055,7 @@ cat << "EOF"
 ╔══════════════════════════════════════════════════════╗
 ║  MML Universal Raspberry Pi Setup Script             ║
 ║  Enhanced Security Edition                           ║
-║  2025-10-24 d                                        ║
+║  2025-10-24 e                                        ║
 ╚══════════════════════════════════════════════════════╝
 EOF
 echo ""
@@ -1186,7 +1071,6 @@ LAST_CHECKPOINT=$(load_checkpoint)
 
 if [ "$LAST_CHECKPOINT" != "START" ] && [ "$LAST_CHECKPOINT" != "COMPLETE" ] && [ "$FORCE_RERUN" -eq 0 ]; then
   log_warning "Previous installation interrupted at: $LAST_CHECKPOINT"
-
   if prompt_yn "Resume from last checkpoint? (y/n): " y; then
     log_info "Resuming from: $LAST_CHECKPOINT"
   else
@@ -1230,7 +1114,7 @@ if ! is_checkpoint_passed "HOSTNAME"; then
 fi
 
 ############################################################
-# Network
+# Network (UPDATED)
 ############################################################
 if ! is_checkpoint_passed "NETWORK"; then
   configure_network
@@ -1250,11 +1134,9 @@ fi
 ############################################################
 if ! is_checkpoint_passed "UPDATE"; then
   log_info "Updating package lists..."
-
   if [ "$DRY_RUN" -eq 0 ]; then
     sudo apt-get update -y || exit 1
   fi
-
   save_checkpoint "UPDATE"
 fi
 
@@ -1265,7 +1147,6 @@ if ! is_checkpoint_passed "UPGRADE"; then
   if [[ "$PERF_TIER" == "MINIMAL" ]]; then
     if prompt_yn "Proceed with system upgrade? (slow) (y/n): " y; then
       log_info "Upgrading packages..."
-
       if [ "$DRY_RUN" -eq 0 ]; then
         sudo apt-get upgrade -y &
         show_progress $! "Upgrading packages"
@@ -1273,7 +1154,6 @@ if ! is_checkpoint_passed "UPGRADE"; then
     fi
   else
     log_info "Upgrading packages..."
-
     if [ "$DRY_RUN" -eq 0 ]; then
       if [[ "$PERF_TIER" == "LOW" ]]; then
         sudo apt-get upgrade -y &
@@ -1283,7 +1163,6 @@ if ! is_checkpoint_passed "UPGRADE"; then
       fi
     fi
   fi
-
   save_checkpoint "UPGRADE"
   check_temperature
 fi
@@ -1293,15 +1172,12 @@ fi
 ############################################################
 if ! is_checkpoint_passed "ESSENTIAL"; then
   log_info "Installing essential packages..."
-
   ESSENTIAL_PACKAGES=(
     curl wget git vim htop tree unzip
     apt-transport-https ca-certificates gnupg
     lsb-release net-tools ufw arping
   )
-
   [[ "$PERF_TIER" != "MINIMAL" ]] && ESSENTIAL_PACKAGES+=(build-essential)
-
   if [[ "$PERF_TIER" == "HIGH" || "$PERF_TIER" == "MEDIUM" ]]; then
     ESSENTIAL_PACKAGES+=(python3-pip python3-venv python3-dev)
   elif [[ "$PERF_TIER" == "LOW" ]]; then
@@ -1309,7 +1185,6 @@ if ! is_checkpoint_passed "ESSENTIAL"; then
   else
     ESSENTIAL_PACKAGES+=(python3)
   fi
-
   if [[ "$PERF_TIER" == "HIGH" || "$PERF_TIER" == "MEDIUM" ]]; then
     if [[ "$PI_ARCH" != "armv6l" ]]; then
       if prompt_yn "Install Node.js? (y/n): " n; then
@@ -1317,9 +1192,7 @@ if ! is_checkpoint_passed "ESSENTIAL"; then
       fi
     fi
   fi
-
   install_packages "${ESSENTIAL_PACKAGES[@]}" || exit 1
-
   save_checkpoint "ESSENTIAL"
   check_temperature
 fi
@@ -1329,7 +1202,6 @@ fi
 ############################################################
 if ! is_checkpoint_passed "SECURITY"; then
   log_info "Setting up firewall..."
-
   if [ "$DRY_RUN" -eq 0 ]; then
     sudo ufw default deny incoming
     sudo ufw default allow outgoing
@@ -1337,13 +1209,11 @@ if ! is_checkpoint_passed "SECURITY"; then
     sudo ufw --force enable
     log_success "Firewall configured"
   fi
-
   if ! systemctl is-active --quiet ssh 2>/dev/null; then
     if [ "$DRY_RUN" -eq 0 ]; then
       sudo systemctl enable --now ssh
     fi
   fi
-
   save_checkpoint "SECURITY"
 fi
 
@@ -1356,7 +1226,6 @@ if ! is_checkpoint_passed "VNC"; then
   else
     VNC_ENABLED=0
   fi
-
   save_checkpoint "VNC"
 fi
 
@@ -1383,16 +1252,15 @@ if ! is_checkpoint_passed "GIT"; then
       fi
     fi
   fi
-
   save_checkpoint "GIT"
 fi
 
 ############################################################
-# Email
+# Email (UPDATED: msmtp with secure file, no GPG)
 ############################################################
 if ! is_checkpoint_passed "EMAIL"; then
   if [ ! -f ~/.msmtprc ]; then
-    if prompt_yn "Configure email (msmtp)? (y/n): " n; then
+    if prompt_yn "Configure email (msmtp for Gmail)? (y/n): " n; then
       install_packages msmtp msmtp-mta gpg
 
       mkdir -p ~/.secrets
@@ -1402,18 +1270,17 @@ if ! is_checkpoint_passed "EMAIL"; then
       email_address=$(read_tty "Gmail address: " "")
 
       if [ -n "$email_address" ] && validate_email "$email_address"; then
-        log_info "Create App Password at: https://myaccount.google.com/apppasswords"
-
+        log_info "Create an App Password at: https://myaccount.google.com/apppasswords"
         app_password=""
-        app_password=$(read_secure "Gmail App Password: ")
+        app_password=$(read_secure "Gmail App Password (16 chars, no spaces): ")
+        app_password="$(echo "$app_password" | tr -d ' ')"
 
-        if [ -n "$app_password" ] && [ ${#app_password} -ge 16 ]; then
+        if [ -n "$app_password" ] && [ ${#app_password} -eq 16 ]; then
           if [ "$DRY_RUN" -eq 0 ]; then
-            printf "%s" "$app_password" | gpg --batch --yes --symmetric --cipher-algo AES256 -o ~/.secrets/msmtp.gpg 2>/dev/null
-            app_password=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64)
+            # Store password in a 600 file and reference via passwordeval
+            echo "$app_password" > ~/.secrets/msmtp.pass
+            chmod 600 ~/.secrets/msmtp.pass
             unset app_password
-
-            chmod 600 ~/.secrets/msmtp.gpg
 
             cat > ~/.msmtprc <<'MSMTPEOF'
 defaults
@@ -1428,7 +1295,7 @@ host           smtp.gmail.com
 port           587
 from           EMAIL_PLACEHOLDER
 user           EMAIL_PLACEHOLDER
-passwordeval   "gpg --quiet --batch --decrypt ~/.secrets/msmtp.gpg"
+passwordeval   "cat ~/.secrets/msmtp.pass"
 
 account default : gmail
 MSMTPEOF
@@ -1436,18 +1303,24 @@ MSMTPEOF
             sed -i "s/EMAIL_PLACEHOLDER/$email_address/g" ~/.msmtprc
             chmod 600 ~/.msmtprc
 
+            : > ~/.msmtp.log
+            chmod 600 ~/.msmtp.log
+
             log_info "Testing email..."
             if echo "Test from $(hostname)" | msmtp "$email_address" 2>/dev/null; then
               log_success "Email configured and tested"
             else
-              log_warning "Email configured but test failed"
+              log_warning "Email configured but test failed (check ~/.msmtp.log)"
             fi
           fi
+        else
+          log_error "Invalid app password length."
         fi
+      else
+        log_warning "Invalid email; skipping msmtp setup."
       fi
     fi
   fi
-
   save_checkpoint "EMAIL"
 fi
 
@@ -1457,24 +1330,19 @@ fi
 if ! is_checkpoint_passed "RASPI_CONFIG"; then
   if command -v raspi-config &>/dev/null; then
     log_info "Configuring Pi-specific settings..."
-
     if [ "$DRY_RUN" -eq 0 ]; then
       sudo raspi-config nonint do_expand_rootfs || true
     fi
-
     if prompt_yn "Enable I2C? (y/n): " n; then
       [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_i2c 0
     fi
-
     if prompt_yn "Enable SPI? (y/n): " n; then
       [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_spi 0
     fi
-
     if prompt_yn "Enable Camera? (y/n): " n; then
       [ "$DRY_RUN" -eq 0 ] && sudo raspi-config nonint do_camera 0
     fi
   fi
-
   save_checkpoint "RASPI_CONFIG"
 fi
 
@@ -1484,10 +1352,8 @@ fi
 if ! is_checkpoint_passed "PYTHON"; then
   if [[ "$PERF_TIER" != "MINIMAL" ]]; then
     setup_piwheels
-
     if prompt_yn "Install Python packages? (y/n): " y; then
       PYTHON_PACKAGES=()
-
       if [[ "$PERF_TIER" == "LOW" ]]; then
         PYTHON_PACKAGES+=(requests RPi.GPIO)
         prompt_yn "Install Flask? (y/n): " n && PYTHON_PACKAGES+=(flask)
@@ -1497,11 +1363,9 @@ if ! is_checkpoint_passed "PYTHON"; then
       else
         PYTHON_PACKAGES+=(numpy requests flask RPi.GPIO)
       fi
-
       if [ ${#PYTHON_PACKAGES[@]} -gt 0 ]; then
         if [ "$DRY_RUN" -eq 0 ]; then
           pip3 install --user --no-warn-script-location "${PYTHON_PACKAGES[@]}" || log_warning "Some packages failed"
-
           if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc; then
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
           fi
@@ -1509,7 +1373,6 @@ if ! is_checkpoint_passed "PYTHON"; then
       fi
     fi
   fi
-
   save_checkpoint "PYTHON"
   check_temperature
 fi
@@ -1519,7 +1382,6 @@ fi
 ############################################################
 if ! is_checkpoint_passed "PROFILE"; then
   log_info "Installing profile: $PROFILE"
-
   case $PROFILE in
     web)
       if [[ "$PERF_TIER" == "MINIMAL" ]]; then
@@ -1535,7 +1397,6 @@ if ! is_checkpoint_passed "PROFILE"; then
         fi
       fi
       ;;
-
     iot)
       install_packages mosquitto mosquitto-clients
       if [ "$DRY_RUN" -eq 0 ]; then
@@ -1544,7 +1405,6 @@ if ! is_checkpoint_passed "PROFILE"; then
         sudo ufw allow 1883 comment 'MQTT'
       fi
       ;;
-
     media)
       if [[ "$PERF_TIER" == "MINIMAL" ]]; then
         install_packages omxplayer
@@ -1552,23 +1412,18 @@ if ! is_checkpoint_passed "PROFILE"; then
         install_packages vlc mpv ffmpeg
       fi
       ;;
-
     dev)
       DEV_PACKAGES=(tmux screen)
       [[ "$PERF_TIER" != "MINIMAL" ]] && DEV_PACKAGES+=(docker.io docker-compose)
-
       install_packages "${DEV_PACKAGES[@]}"
-
       if [ "$DRY_RUN" -eq 0 ] && command -v docker &>/dev/null; then
         sudo usermod -aG docker "$USER"
       fi
       ;;
-
     generic)
       log_info "Generic profile - no additional packages"
       ;;
   esac
-
   save_checkpoint "PROFILE"
   check_temperature
 fi
@@ -1578,10 +1433,8 @@ fi
 ############################################################
 if ! is_checkpoint_passed "ALIASES"; then
   log_info "Creating directories and aliases..."
-
   if [ "$DRY_RUN" -eq 0 ]; then
     mkdir -p ~/projects ~/scripts ~/backup ~/logs
-
     if ! grep -q "# === Custom Aliases ===" ~/.bashrc; then
       cat >> ~/.bashrc <<'BASHEOF'
 
@@ -1617,7 +1470,6 @@ echo "=========================================="
 SYSINFOEOF
     chmod +x ~/scripts/sysinfo.sh
   fi
-
   save_checkpoint "ALIASES"
 fi
 
