@@ -231,6 +231,15 @@ DRY_RUN=0
 ENABLE_VNC=0
 PERF_TIER="${PERF_TIER:-MEDIUM}"
 
+# Ensure Pi-related variables are always defined (avoid set -u unbound errors)
+PI_MODEL="${PI_MODEL:-unknown}"
+PI_MEMORY="${PI_MEMORY:-0}"
+PI_ARCH="${PI_ARCH:-$(uname -m)}"
+PI_SERIAL="${PI_SERIAL:-UNKNOWN}"
+# Ensure hostname variable exists (previous fix)
+NEW_HOSTNAME="${NEW_HOSTNAME:-$(hostname)}"
+
+
 # Ensure NEW_HOSTNAME is always defined (avoid unbound variable with set -u)
 NEW_HOSTNAME="$(hostname)"
 
