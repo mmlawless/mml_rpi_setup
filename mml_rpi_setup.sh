@@ -231,6 +231,9 @@ DRY_RUN=0
 ENABLE_VNC=0
 PERF_TIER="${PERF_TIER:-MEDIUM}"
 
+# Ensure NEW_HOSTNAME is always defined (avoid unbound variable with set -u)
+NEW_HOSTNAME="$(hostname)"
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     --non-interactive) NON_INTERACTIVE=1; shift ;;
@@ -1307,7 +1310,7 @@ log_success "Setup completed successfully!"
 echo "=========================================="
 echo ""
 echo "Configuration:"
-echo "  Hostname: $NEW_HOSTNAME"
+echo "  Hostname: ${NEW_HOSTNAME:-$(hostname)}"
 echo "  Model: Pi $PI_MODEL"
 echo "  Memory: ${PI_MEMORY}MB"
 echo "  Tier: $PERF_TIER"
@@ -1324,7 +1327,7 @@ if [ "${VNC_ENABLED:-0}" -eq 1 ]; then
   vnc_ip=$(hostname -I | awk '{print $1}')
   echo "VNC Connection:"
   echo "  Address: ${vnc_ip}:5900"
-  echo "  or: ${NEW_HOSTNAME}.local:5900"
+  echo "  or: ${NEW_HOSTNAME:-$(hostname)}.local:5900"
   echo ""
 fi
 
