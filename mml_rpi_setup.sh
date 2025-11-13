@@ -10,7 +10,7 @@ set -euo pipefail
 #           + Solid msmtp Gmail App Password flow
 ############################################################
 
-SCRIPT_VERSION="2025-10-24-Universal-Secure"
+SCRIPT_VERSION="2025-11-13"
 SCRIPT_HASH="PLACEHOLDER_HASH"
 
 # File paths
