@@ -1196,6 +1196,82 @@ if ! is_checkpoint_passed "ESSENTIAL"; then
   save_checkpoint "ESSENTIAL"
   check_temperature
 fi
+# ... (In your Essential Packages section): ...
+
+log_info "Checking fastfetch installation..."
+
+if ! command -v fastfetch >/dev/null 2>&1; then
+  log_info "Trying to install fastfetch with apt-get first..."
+  if sudo apt-get update -y && sudo apt-get install -y fastfetch; then
+    if command -v fastfetch >/dev/null 2>&1; then
+      log_success "fastfetch installed via apt-get"
+    else
+      log_warning "apt-get install completed, but fastfetch command not found. Trying fallback methods..."
+    fi
+  else
+    log_warning "apt-get install fastfetch failed or package not found. Trying fallback methods..."
+  fi
+
+  if ! command -v fastfetch >/dev/null 2>&1; then
+    log_info "Attempting to install fastfetch from GitHub releases..."
+    FF_TEMP="$(mktemp -d)"
+    FF_VERSION="$(curl -fsSL https://api.github.com/repos/fastfetch-cli/fastfetch/releases/latest | grep tag_name | cut -d '"' -f4)"
+    FF_UNAME="$(uname -m)"
+    FF_ARCHIVE=""
+    FF_URL=""
+
+    case "$FF_UNAME" in
+      armv6l)
+        log_info "Detected Pi 1/Zero (armv6l)"
+        FF_ARCHIVE="fastfetch-linux-armv6l.tar.gz"
+        ;;
+      armv7l)
+        log_info "Detected Pi 2/3 (armv7l)"
+        FF_ARCHIVE="fastfetch-linux-armv7l.tar.gz"
+        ;;
+      aarch64|arm64)
+        log_info "Detected Pi 3/4/5 64-bit (aarch64)"
+        FF_ARCHIVE="fastfetch-linux-aarch64.tar.gz"
+        ;;
+      x86_64)
+        log_info "Detected x86_64 (not a Raspberry Pi)"
+        FF_ARCHIVE="fastfetch-linux-amd64.tar.gz"
+        ;;
+      *)
+        log_warning "Unknown architecture ($FF_UNAME), defaulting to armv7l. If Pi 1/Zero, try 'armv6l'."
+        FF_ARCHIVE="fastfetch-linux-armv7l.tar.gz"
+        ;;
+    esac
+
+    FF_URL="https://github.com/fastfetch-cli/fastfetch/releases/download/${FF_VERSION}/${FF_ARCHIVE}"
+    log_info "Attempting download: $FF_URL"
+
+    if curl -fsSL "$FF_URL" -o "$FF_TEMP/$FF_ARCHIVE" && tar -xzf "$FF_TEMP/$FF_ARCHIVE" -C "$FF_TEMP" && [ -x "$FF_TEMP/fastfetch" ]; then
+      sudo install -m 755 "$FF_TEMP/fastfetch" /usr/local/bin/fastfetch
+      if command -v fastfetch >/dev/null 2>&1; then
+        log_success "fastfetch installed from GitHub release (${FF_ARCHIVE})"
+      else
+        log_error "Download and extraction worked, but fastfetch not on path. Check /usr/local/bin or install manually."
+      fi
+    else
+      log_error "GitHub release binary download failed or not compatible. Trying to build from source with cargo..."
+      if command -v cargo >/dev/null 2>&1; then
+        if cargo install fastfetch; then
+          log_success "fastfetch installed with cargo"
+        else
+          log_error "Failed to build fastfetch from source with cargo. See https://github.com/fastfetch-cli/fastfetch"
+        fi
+      else
+        log_error "Cargo (Rust) not available. Please install cargo/rust or download binaries manually."
+      fi
+    fi
+
+    rm -rf "$FF_TEMP"
+  fi
+
+else
+  log_success "fastfetch already installed."
+fi
 
 ############################################################
 # Security
