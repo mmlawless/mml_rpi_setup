@@ -1051,11 +1051,11 @@ setup_logging
 acquire_lock
 
 clear
-cat << "EOF"
+cat <<EOF
 ╔══════════════════════════════════════════════════════╗
 ║  MML Universal Raspberry Pi Setup Script             ║
 ║  Enhanced Security Edition                           ║
-║  2025-10-24 e                                        ║
+║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 9)) "")║
 ╚══════════════════════════════════════════════════════╝
 EOF
 echo ""
