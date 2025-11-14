@@ -1200,11 +1200,13 @@ fi
 
 log_info "Checking fastfetch installation..."
 
+FASTFETCH_INSTALLED=0
 if ! command -v fastfetch >/dev/null 2>&1; then
   log_info "Trying to install fastfetch with apt-get first..."
   if sudo apt-get update -y && sudo apt-get install -y fastfetch; then
     if command -v fastfetch >/dev/null 2>&1; then
       log_success "fastfetch installed via apt-get"
+      FASTFETCH_INSTALLED=1
     else
       log_warning "apt-get install completed, but fastfetch command not found. Trying fallback methods..."
     fi
@@ -1250,6 +1252,7 @@ if ! command -v fastfetch >/dev/null 2>&1; then
       sudo install -m 755 "$FF_TEMP/fastfetch" /usr/local/bin/fastfetch
       if command -v fastfetch >/dev/null 2>&1; then
         log_success "fastfetch installed from GitHub release (${FF_ARCHIVE})"
+        FASTFETCH_INSTALLED=1
       else
         log_error "Download and extraction worked, but fastfetch not on path. Check /usr/local/bin or install manually."
       fi
@@ -1258,6 +1261,7 @@ if ! command -v fastfetch >/dev/null 2>&1; then
       if command -v cargo >/dev/null 2>&1; then
         if cargo install fastfetch; then
           log_success "fastfetch installed with cargo"
+          FASTFETCH_INSTALLED=1
         else
           log_error "Failed to build fastfetch from source with cargo. See https://github.com/fastfetch-cli/fastfetch"
         fi
@@ -1268,9 +1272,19 @@ if ! command -v fastfetch >/dev/null 2>&1; then
 
     rm -rf "$FF_TEMP"
   fi
-
 else
   log_success "fastfetch already installed."
+  FASTFETCH_INSTALLED=1
+fi
+
+# PATCH: Ensure fastfetch is run automatically in every new terminal
+if [ "$FASTFETCH_INSTALLED" -eq 1 ]; then
+  if ! grep -qx "fastfetch" ~/.bashrc; then
+    echo "fastfetch" >> ~/.bashrc
+    log_info "Configured fastfetch to run on new terminal (added to ~/.bashrc)"
+  else
+    log_info "fastfetch already configured to run on new terminal in ~/.bashrc"
+  fi
 fi
 
 ############################################################
