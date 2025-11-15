@@ -144,14 +144,12 @@ is_checkpoint_passed() {
   return 0
 }
 
-# Enhanced menu-style toggle for all relevant y/n features
 prompt_feature_toggle() {
   local feature="$1"
   local state="$2"
   local enable_cmd="$3"
   local disable_cmd="$4"
-  local menu_default="$5"
-  local action
+  echo ""
   echo "$feature is currently $state."
   echo "Choose:"
   echo "  [e]nable"
@@ -182,16 +180,29 @@ prompt_yn() {
 }
 
 ############################################################
-# Script variables/state
+# Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-15d"
+SCRIPT_VERSION="2025-11-14"
 SCRIPT_HASH="PLACEHOLDER_HASH"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 LOG_FILE="$HOME/.rpi_setup.log"
 LOCK_FILE="/tmp/rpi_setup.lock"
 DRY_RUN=0
+
+# Box banner for setup script/version
+clear
+cat <<EOF
+╔══════════════════════════════════════════════════════╗
+║  MML Universal Raspberry Pi Setup Script             ║
+║  Enhanced Security Edition                           ║
+║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 9)) "")║
+╚══════════════════════════════════════════════════════╝
+EOF
+echo ""
+log_info "Version: $SCRIPT_VERSION"
+echo ""
 
 ############################################################
 # Logging setup and lock
@@ -206,7 +217,7 @@ setup_logging() {
   log_info "Version: $SCRIPT_VERSION"
 }
 setup_logging
-# Acquire lock (function could be moved here if you want; omitted for brevity)
+# Acquire lock
 if [ -e "$LOCK_FILE" ]; then
   log_error "Lock file exists, another instance is running."
   exit 1
@@ -247,7 +258,7 @@ echo "=========================================="
 echo ""
 
 ############################################################
-# Feature sections with toggles
+# Feature sections with toggles (SPI, I2C, Camera, VNC, Firewall, Swap, Git, Python)
 ############################################################
 
 # SPI
@@ -255,20 +266,17 @@ if ! is_checkpoint_passed "RASPI_CONFIG"; then
   SPI_STATE=$(grep -q '^dtparam=spi=on' /boot/config.txt && echo "enabled" || echo "disabled")
   prompt_feature_toggle "SPI" "$SPI_STATE" \
     "sudo raspi-config nonint do_spi 0" \
-    "sudo raspi-config nonint do_spi 1" \
-    "l"
+    "sudo raspi-config nonint do_spi 1"
   # I2C
   I2C_STATE=$(grep -q '^dtparam=i2c_arm=on' /boot/config.txt && echo "enabled" || echo "disabled")
   prompt_feature_toggle "I2C" "$I2C_STATE" \
     "sudo raspi-config nonint do_i2c 0" \
-    "sudo raspi-config nonint do_i2c 1" \
-    "l"
+    "sudo raspi-config nonint do_i2c 1"
   # Camera
   CAMERA_STATE=$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")
   prompt_feature_toggle "Camera" "$CAMERA_STATE" \
     "sudo raspi-config nonint do_camera 0" \
-    "sudo raspi-config nonint do_camera 1" \
-    "l"
+    "sudo raspi-config nonint do_camera 1"
   save_checkpoint "RASPI_CONFIG"
 fi
 
@@ -277,8 +285,7 @@ if ! is_checkpoint_passed "VNC"; then
   VNC_SERVICE_STATUS=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
   prompt_feature_toggle "VNC" "$VNC_SERVICE_STATUS" \
     "sudo systemctl enable --now vncserver-x11-serviced.service" \
-    "sudo systemctl disable --now vncserver-x11-serviced.service" \
-    "l"
+    "sudo systemctl disable --now vncserver-x11-serviced.service"
   save_checkpoint "VNC"
 fi
 
@@ -287,8 +294,7 @@ if ! is_checkpoint_passed "SECURITY"; then
   UFW_STATUS=$(sudo ufw status | grep -qw "active" && echo "enabled" || echo "disabled")
   prompt_feature_toggle "Firewall (UFW)" "$UFW_STATUS" \
     "sudo ufw --force enable" \
-    "sudo ufw disable" \
-    "l"
+    "sudo ufw disable"
   save_checkpoint "SECURITY"
 fi
 
@@ -298,8 +304,7 @@ if ! is_checkpoint_passed "SWAP"; then
   SWAP_STATE=$([ "$CURRENT_SWAP" -ge 1024 ] && echo "enabled" || echo "disabled")
   prompt_feature_toggle "1024MB Swap" "$SWAP_STATE" \
     "sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile; sudo dphys-swapfile setup; sudo dphys-swapfile swapon" \
-    "sudo dphys-swapfile swapoff; sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=100/' /etc/dphys-swapfile; sudo dphys-swapfile setup; sudo dphys-swapfile swapon" \
-    "l"
+    "sudo dphys-swapfile swapoff; sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=100/' /etc/dphys-swapfile; sudo dphys-swapfile setup; sudo dphys-swapfile swapon"
   save_checkpoint "SWAP"
 fi
 
@@ -307,7 +312,6 @@ fi
 if ! is_checkpoint_passed "GIT"; then
   GIT_NAME="$(git config --global user.name 2>/dev/null || true)"
   GIT_EMAIL="$(git config --global user.email 2>/dev/null || true)"
-  local menu
   if [[ -n "$GIT_NAME" && -n "$GIT_EMAIL" ]]; then
     echo "Git is already configured: $GIT_NAME <$GIT_EMAIL>"
     echo "Options:"
@@ -334,23 +338,23 @@ fi
 
 # Python packages
 if ! is_checkpoint_passed "PYTHON"; then
-  PYTHON_PKGS_INSTALLED=$(pip3 list | grep -qw requests && echo "requests" || echo "")
-  echo "Python packages (requests): $([ -n "$PYTHON_PKGS_INSTALLED" ] && echo "already installed" || echo "not installed")"
-  echo "Options:"
-  echo "  [i]nstall/upgrade"
-  echo "  [l]eave alone (default)"
-  read -r -p "Select action [l]: " action
-  action="${action,,}"
-  if [[ "$action" == "i" ]]; then
-    pip3 install --user --upgrade requests
-    log_success "Python packages installed/upgraded"
-  else
-    log_info "Leaving Python packages unchanged."
-  fi
+  PYTHON_PKGS_INSTALLED=$(pip3 list | grep -qw requests && echo "installed" || echo "not installed")
+  prompt_feature_toggle "requests (Python package)" "$PYTHON_PKGS_INSTALLED" \
+    "pip3 install --user --upgrade requests" \
+    "pip3 uninstall -y requests"
   save_checkpoint "PYTHON"
 fi
 
-# Profile-specific packages: Similar logic can be applied if you wish menus for each.
+# Neofetch install and auto-run in terminal.
+if ! command -v neofetch >/dev/null 2>&1; then
+  install_packages neofetch
+fi
+if ! grep -qx "neofetch" ~/.bashrc; then
+  echo "neofetch" >> ~/.bashrc
+  log_info "Configured neofetch to run on new terminal (added to ~/.bashrc)"
+else
+  log_info "neofetch already configured to run on new terminal in ~/.bashrc"
+fi
 
 # Aliases (not toggle)
 if ! is_checkpoint_passed "ALIASES"; then
@@ -373,27 +377,20 @@ BASHEOF
   save_checkpoint "ALIASES"
 fi
 
-# Neofetch auto-run in terminal
-if ! command -v neofetch >/dev/null 2>&1; then
-  install_packages neofetch
-fi
-if ! grep -qx "neofetch" ~/.bashrc; then
-  echo "neofetch" >> ~/.bashrc
-  log_info "Configured neofetch to run on new terminal (added to ~/.bashrc)"
-fi
+############################################################
+# Always set state variables for summary reporting
+############################################################
 
-
-# Always detect swap state before summary
 CURRENT_SWAP=$(free -m | awk '/^Swap:/ {print $2}')
 SWAP_STATE=$([ "$CURRENT_SWAP" -ge 1024 ] && echo "enabled" || echo "disabled")
-
-echo ""
-echo "=========================================="
-log_success "Setup completed successfully!"
-echo "=========================================="
-echo ""
-echo "Configuration:"
-echo "  Swap: $SWAP_STATE"
+VNC_SERVICE_STATUS=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
+UFW_STATUS=$(sudo ufw status | grep -qw "active" && echo "enabled" || echo "disabled")
+SPI_STATE=$(grep -q '^dtparam=spi=on' /boot/config.txt && echo "enabled" || echo "disabled")
+I2C_STATE=$(grep -q '^dtparam=i2c_arm=on' /boot/config.txt && echo "enabled" || echo "disabled")
+CAMERA_STATE=$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")
+GIT_NAME="$(git config --global user.name 2>/dev/null || echo "not set")"
+GIT_EMAIL="$(git config --global user.email 2>/dev/null || echo "not set")"
+PYTHON_PKGS_INSTALLED=$(pip3 list | grep -qw requests && echo "installed" || echo "not installed")
 
 ############################################################
 # Finish script as usual (summary, reboot prompt...)
@@ -406,6 +403,13 @@ echo "=========================================="
 echo ""
 echo "Configuration:"
 echo "  Swap: $SWAP_STATE"
+echo "  SPI: $SPI_STATE"
+echo "  I2C: $I2C_STATE"
+echo "  Camera: $CAMERA_STATE"
+echo "  VNC: $VNC_SERVICE_STATUS"
+echo "  Firewall (UFW): $UFW_STATUS"
+echo "  Git: $GIT_NAME <$GIT_EMAIL>"
+echo "  Python requests: $PYTHON_PKGS_INSTALLED"
 echo ""
 log_warning "Reboot required to finalize all changes!"
 echo ""
