@@ -382,6 +382,19 @@ if ! grep -qx "neofetch" ~/.bashrc; then
   log_info "Configured neofetch to run on new terminal (added to ~/.bashrc)"
 fi
 
+
+# Always detect swap state before summary
+CURRENT_SWAP=$(free -m | awk '/^Swap:/ {print $2}')
+SWAP_STATE=$([ "$CURRENT_SWAP" -ge 1024 ] && echo "enabled" || echo "disabled")
+
+echo ""
+echo "=========================================="
+log_success "Setup completed successfully!"
+echo "=========================================="
+echo ""
+echo "Configuration:"
+echo "  Swap: $SWAP_STATE"
+
 ############################################################
 # Finish script as usual (summary, reboot prompt...)
 ############################################################
