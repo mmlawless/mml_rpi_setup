@@ -25,6 +25,7 @@ log_progress() { echo -e "${CYAN}[PROGRESS $(date +%H:%M:%S)]${NC} $1"; }
 log_temp()     { echo -e "${MAGENTA}[TEMP $(date +%H:%M:%S)]${NC} $1"; }
 log_debug()    { [ "${DEBUG:-0}" -eq 1 ] && echo -e "[DEBUG $(date +%H:%M:%S)] $1" || true; }
 
+# --- Utility Functions ---
 install_packages() {
   local package_list=("$@")
   [ ${#package_list[@]} -eq 0 ] && return 0
@@ -61,14 +62,6 @@ atomic_write() {
   mv "$tmp" "$target"
 }
 
-validate_number() {
-  local value="$1"
-  local min="${2:-0}"
-  local max="${3:-999999}"
-  [[ "$value" =~ ^[0-9]+$ ]] || return 1
-  [ "$value" -ge "$min" ] && [ "$value" -le "$max" ]
-}
-
 validate_hostname() {
   local hostname="$1"
   [[ "$hostname" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] && [ ${#hostname} -le 63 ]
@@ -96,7 +89,7 @@ validate_cidr() {
   local ip="${BASH_REMATCH[1]}"
   local prefix="${BASH_REMATCH[2]}"
   validate_ip "$ip" || return 1
-  validate_number "$prefix" 0 32
+  [[ "$prefix" =~ ^[0-9]+$ ]] && [ "$prefix" -ge 0 ] && [ "$prefix" -le 32 ]
 }
 
 save_checkpoint() {
@@ -138,28 +131,22 @@ is_checkpoint_passed() {
 prompt_feature_toggle() {
   local feature="$1"
   local state="$2"
-  local enable_cmd="$3"
-  local disable_cmd="$4"
+  local info="$3"
+  local enable_cmd="$4"
+  local disable_cmd="$5"
   echo ""
-  echo "$feature is currently $state."
+  echo "$feature is currently $state. ${CYAN}$info${NC}"
   echo "Choose:"
   echo "  [e]nable"
   echo "  [d]isable"
   echo "  [l]eave as-is (default)"
   read -r -p "Select action [l]: " action
   action="${action,,}" # lowercase
+  if [[ -z "$action" ]]; then action="l"; fi
   case "$action" in
-    e)
-      log_info "Enabling $feature..."
-      eval "$enable_cmd"
-      ;;
-    d)
-      log_info "Disabling $feature..."
-      eval "$disable_cmd"
-      ;;
-    *)
-      log_info "Leaving $feature as is."
-      ;;
+    e) log_info "Enabling $feature..."; eval "$enable_cmd" ;;
+    d) log_info "Disabling $feature..."; eval "$disable_cmd" ;;
+    *) log_info "Leaving $feature as is." ;;
   esac
 }
 
@@ -178,8 +165,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-15gg"
-SCRIPT_HASH="PLACEHOLDER_HASH"
+SCRIPT_VERSION="2025-11-14"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 LOG_FILE="$HOME/.rpi_setup.log"
@@ -225,30 +211,43 @@ trap 'rm -f "$LOCK_FILE"' EXIT
 CHECKPOINTS=(START LOCALE DETECT HOSTNAME NETWORK SWAP UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE)
 CHECKPOINTS_TOTAL=${#CHECKPOINTS[@]}
 
-get_checkpoint_status() {
+# --- Status Queries for Menu ---
+get_current_status() {
+  declare -A status
+  status["SPI"]="$(grep -q '^dtparam=spi=on' /boot/config.txt 2>/dev/null && echo "enabled" || echo "disabled")"
+  status["I2C"]="$(grep -q '^dtparam=i2c_arm=on' /boot/config.txt 2>/dev/null && echo "enabled" || echo "disabled")"
+  status["CAMERA"]="$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")"
+  status["SWAP"]="$(free -m | awk '/^Swap:/ {print ($2 >= 1024 ? "enabled" : "disabled") }')"
+  status["UFW"]="$(sudo ufw status | grep -qw "active" && echo "enabled" || echo "disabled")"
+  status["VNC"]="$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")"
+  status["GIT_USER"]="$(git config --global user.name 2>/dev/null || echo "not set")"
+  status["GIT_EMAIL"]="$(git config --global user.email 2>/dev/null || echo "not set")"
+  status["REQUESTS"]="$(pip3 list | grep -qw requests && echo "installed" || echo "not installed")"
+  status["HOSTNAME"]="$(hostname)"
+  status["PROFILE"]="$(grep PROFILE= $STATE_FILE 2>/dev/null | cut -d= -f2 | grep -oE '[^ ]+' || echo "not set")"
+  echo "${status[@]}"
+  # For direct indexed status, use get_checkpoint_status_color
+}
+
+get_checkpoint_status_array() {
+  # Returns completed/incomplete per checkpoint
   local last=$(load_checkpoint)
   local last_index=-1
-  local status=()
+  local out=()
   for i in "${!CHECKPOINTS[@]}"; do
-    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then
-      last_index=$i
-      break
-    fi
+    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then last_index=$i; fi
   done
   for i in "${!CHECKPOINTS[@]}"; do
-    if [[ $i -le $last_index ]]; then status+=("completed"); else status+=("incomplete"); fi
+    if [[ $i -le $last_index ]]; then out+=("completed"); else out+=("incomplete"); fi
   done
-  echo "${status[@]}"
+  echo "${out[@]}"
 }
 
 is_any_incomplete() {
   local last=$(load_checkpoint)
   local last_index=-1
   for i in "${!CHECKPOINTS[@]}"; do
-    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then
-      last_index=$i
-      break
-    fi
+    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then last_index=$i; fi
   done
   if [[ $last_index -eq $((CHECKPOINTS_TOTAL - 1)) ]]; then
     return 1
@@ -258,15 +257,28 @@ is_any_incomplete() {
 }
 
 draw_menu() {
-  local statuses=($(get_checkpoint_status))
+  local status_arr=($(get_checkpoint_status_array))
+  IFS=' ' read -r spi i2c cam swp ufw vnc gituser gitemail requests hname prof <<< $(get_current_status)
   echo ""
   echo -e "${CYAN}Checkpoint Progress:${NC}"
   for i in "${!CHECKPOINTS[@]}"; do
-    if [[ "${statuses[$i]}" == "completed" ]]; then
-      printf "${GREEN}%2d) %-14s [COMPLETED]${NC}\n" $((i+1)) "${CHECKPOINTS[$i]}"
-    else
-      printf "${RED}%2d) %-14s [INCOMPLETE]${NC}\n" $((i+1)) "${CHECKPOINTS[$i]}"
-    fi
+    item="${CHECKPOINTS[$i]}"
+    stat="${status_arr[$i]}"
+    color=$([[ "$stat" == "completed" ]] && echo "$GREEN" || echo "$RED")
+    extra=""
+    case "$item" in
+      "SPI")        extra="Status: $spi" ;;
+      "I2C")        extra="Status: $i2c" ;;
+      "CAMERA")     extra="Status: $cam" ;;
+      "SWAP")       extra="Status: $swp" ;;
+      "SECURITY")   extra="UFW: $ufw" ;;
+      "VNC")        extra="Status: $vnc" ;;
+      "GIT")        extra="User: $gituser, Email: $gitemail" ;;
+      "PYTHON")     extra="requests: $requests" ;;
+      "HOSTNAME")   extra="Current: $hname" ;;
+      "PROFILE")    extra="Profile: $prof" ;;
+    esac
+    printf "%s%2d) %-14s [%s]%s %s\n" "$color" $((i+1)) "$item" "$stat" "$NC" "$extra"
   done
   echo ""
 }
@@ -278,7 +290,6 @@ choose_checkpoint() {
   echo "  [a]ll remaining"
   echo "  [c]hoose specific"
   echo "  [q]uit"
-  # If all completed, give option to run nothing or select for change!
   is_any_incomplete
   local incomplete="$?"
   if [[ $incomplete -ne 0 ]]; then
@@ -286,6 +297,7 @@ choose_checkpoint() {
   fi
   read -r -p "Your choice [r/a/c/q]: " action
   action="${action,,}" # lowercase
+  if [[ -z "$action" ]]; then action="r"; fi
   echo "$action"
 }
 
@@ -297,25 +309,21 @@ run_START()       { log_info "START: Script initialized."; save_checkpoint "STAR
 run_LOCALE()      { sudo apt-get install -y locales; sudo locale-gen en_GB.UTF-8; sudo update-locale LANG=en_GB.UTF-8; log_success "Locale configured"; save_checkpoint "LOCALE"; }
 run_DETECT()      { log_info "Hardware detection is complete"; save_checkpoint "DETECT"; }
 run_HOSTNAME()    {
-  local generated="LH-PI-NEW"
   local current_hostname=$(hostname)
   local input
-  read -r -p "Enter desired hostname (leave blank for auto): " input
+  read -r -p "Enter desired hostname (leave blank for current: $current_hostname): " input
   local new_hostname="$current_hostname"
   if [ -n "$input" ]; then
     if validate_hostname "$input"; then
       new_hostname="$input"
     else
-      log_warning "Invalid hostname. Using auto-detected."
-      new_hostname="$generated"
+      log_warning "Invalid hostname. Using current."
     fi
-  else
-    new_hostname="$generated"
   fi
   log_info "Setting hostname to $new_hostname"
   echo "$new_hostname" | sudo tee /etc/hostname >/dev/null
   sudo hostnamectl set-hostname "$new_hostname"
-  log_success "Hostname set"
+  log_success "Hostname set: $new_hostname"
   save_checkpoint "HOSTNAME"
 }
 run_NETWORK()     {
@@ -341,7 +349,7 @@ run_NETWORK()     {
 run_SWAP()        {
   local current_swap=$(free -m | awk '/^Swap:/ {print $2}')
   local state=$([ "$current_swap" -ge 1024 ] && echo "enabled" || echo "disabled")
-  prompt_feature_toggle "1024MB Swap" "$state" \
+  prompt_feature_toggle "1024MB Swap" "$state" "Current MB: $current_swap" \
     "sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile; sudo dphys-swapfile setup; sudo dphys-swapfile swapon" \
     "sudo dphys-swapfile swapoff; sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=100/' /etc/dphys-swapfile; sudo dphys-swapfile setup; sudo dphys-swapfile swapon"
   save_checkpoint "SWAP"
@@ -350,48 +358,39 @@ run_UPDATE()      { log_info "Updating package lists..."; sudo apt-get update -y
 run_UPGRADE()     { log_info "Upgrading system packages..."; sudo apt-get upgrade -y; log_success "Packages upgraded."; save_checkpoint "UPGRADE"; }
 run_ESSENTIAL()   { local packages=(curl wget git vim htop tree unzip apt-transport-https ca-certificates gnupg lsb-release net-tools ufw arping neofetch); install_packages "${packages[@]}"; log_success "Essential packages installed."; save_checkpoint "ESSENTIAL"; }
 run_SECURITY()    {
-  local ufw_status=$(sudo ufw status | grep -qw "active" && echo "enabled" || echo "disabled")
-  prompt_feature_toggle "Firewall (UFW)" "$ufw_status" \
+  local ufw=$(sudo ufw status | grep -qw "active" && echo "enabled" || echo "disabled")
+  prompt_feature_toggle "Firewall (UFW)" "$ufw" "Current status: $ufw" \
     "sudo ufw --force enable" \
     "sudo ufw disable"
   save_checkpoint "SECURITY"
 }
 run_VNC()         {
-  local vnc_status=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
-  prompt_feature_toggle "VNC" "$vnc_status" \
+  local vnc=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
+  prompt_feature_toggle "VNC" "$vnc" "Current status: $vnc" \
     "sudo systemctl enable --now vncserver-x11-serviced.service" \
     "sudo systemctl disable --now vncserver-x11-serviced.service"
   save_checkpoint "VNC"
 }
 run_GIT()         {
-  local git_name="$(git config --global user.name 2>/dev/null || true)"
-  local git_email="$(git config --global user.email 2>/dev/null || true)"
-  if [[ -n "$git_name" && -n "$git_email" ]]; then
-    echo "Git is already configured: $git_name <$git_email>"
-    read -r -p "Reconfigure git? (y/n) [n]: " ans
-    if [[ "${ans,,}" == "y" ]]; then
-      git_name=""; git_email=""
-    fi
-  fi
-  if [[ -z "$git_name" ]]; then
-    read -r -p "Git username: " git_name
-    git config --global user.name "$git_name"
-  fi
-  if [[ -z "$git_email" ]]; then
-    read -r -p "Git email: " git_email
-    git config --global user.email "$git_email"
-  fi
-  log_success "Git configured as $git_name <$git_email>"
+  local user="$(git config --global user.name 2>/dev/null || echo "")"
+  local email="$(git config --global user.email 2>/dev/null || echo "")"
+  log_info "Current git user: ${user:-not set}, email: ${email:-not set}"
+  read -r -p "New git username (leave blank for '$user'): " newuser
+  [ -n "$newuser" ] && user="$newuser"
+  read -r -p "New git email (leave blank for '$email'): " newemail
+  [ -n "$newemail" ] && email="$newemail"
+  if [[ -n "$user" ]]; then git config --global user.name "$user"; fi
+  if [[ -n "$email" ]]; then git config --global user.email "$email"; fi
+  log_success "Git configured as $user <$email>"
   save_checkpoint "GIT"
 }
 run_EMAIL()       {
+  log_info "Current email config: $(grep from ~/.msmtprc 2>/dev/null | grep -oE '[^ ]+$' || echo "not set")"
   read -r -p "Configure email (for msmtp)? (y/n) [n]: " ans
   if [[ "${ans,,}" == "y" ]]; then
-    echo "Please enter Gmail address: "
-    read -r email_address
-    echo "Create a Gmail App Password at: https://myaccount.google.com/apppasswords"
-    read -rs -p "Gmail App Password: " app_pass
-    echo ""
+    read -r -p "Please enter Gmail address: " email_address
+    echo "Create Gmail App Password at: https://myaccount.google.com/apppasswords"
+    read -rs -p "Gmail App Password: " app_pass; echo
     install_packages msmtp msmtp-mta
     echo "$app_pass" > ~/.secrets_msmtp_pass
     chmod 600 ~/.secrets_msmtp_pass
@@ -418,38 +417,41 @@ EOF
   save_checkpoint "EMAIL"
 }
 run_RASPI_CONFIG() {
-  SPI_STATE=$(grep -q '^dtparam=spi=on' /boot/config.txt && echo "enabled" || echo "disabled")
-  prompt_feature_toggle "SPI" "$SPI_STATE" \
+  local spi=$(grep -q '^dtparam=spi=on' /boot/config.txt 2>/dev/null && echo "enabled" || echo "disabled")
+  local i2c=$(grep -q '^dtparam=i2c_arm=on' /boot/config.txt 2>/dev/null && echo "enabled" || echo "disabled")
+  local cam=$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")
+  prompt_feature_toggle "SPI" "$spi" "Current: $spi" \
     "sudo raspi-config nonint do_spi 0" \
     "sudo raspi-config nonint do_spi 1"
-  I2C_STATE=$(grep -q '^dtparam=i2c_arm=on' /boot/config.txt && echo "enabled" || echo "disabled")
-  prompt_feature_toggle "I2C" "$I2C_STATE" \
+  prompt_feature_toggle "I2C" "$i2c" "Current: $i2c" \
     "sudo raspi-config nonint do_i2c 0" \
     "sudo raspi-config nonint do_i2c 1"
-  CAMERA_STATE=$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")
-  prompt_feature_toggle "Camera" "$CAMERA_STATE" \
+  prompt_feature_toggle "Camera" "$cam" "Current: $cam" \
     "sudo raspi-config nonint do_camera 0" \
     "sudo raspi-config nonint do_camera 1"
   save_checkpoint "RASPI_CONFIG"
 }
 run_PYTHON()      {
-  local py_pkg_state=$(pip3 list | grep -qw requests && echo "installed" || echo "not installed")
-  prompt_feature_toggle "requests (Python package)" "$py_pkg_state" \
+  local pkg="$(pip3 list | grep -qw requests && echo "installed" || echo "not installed")"
+  prompt_feature_toggle "requests (Python package)" "$pkg" "Current state: $pkg" \
     "pip3 install --user --upgrade requests" \
     "pip3 uninstall -y requests"
   save_checkpoint "PYTHON"
 }
 run_PROFILE()     {
+  local pfchoice="$(grep PROFILE= $STATE_FILE 2>/dev/null | cut -d= -f2 | grep -oE '[^ ]+' || echo "not set")"
   local profiles=("generic" "web" "iot" "media" "dev")
+  echo "Current: $pfchoice"
   echo "Available profiles:"
   for i in "${!profiles[@]}"; do echo "  $((i+1))) ${profiles[$i]}"; done
-  read -r -p "Select profile number [1]: " profnum
-  profnum="${profnum:-1}"
-  local profsel=${profiles[$((profnum-1))]}
+  read -r -p "Select profile number [1]: " pnum
+  pnum="${pnum:-1}"
+  local profsel=${profiles[$((pnum-1))]}
   log_info "Profile selected: $profsel"
+  echo "PROFILE=${profsel}" > $STATE_FILE
   save_checkpoint "PROFILE"
 }
-run_ALIASES()     {
+run_ALIASES() {
   mkdir -p ~/projects ~/scripts ~/backup ~/logs
   if ! grep -q "# === Custom Aliases ===" ~/.bashrc; then
     cat >> ~/.bashrc <<'BASHEOF'
@@ -496,17 +498,13 @@ function run_checkpoint_by_name() {
   esac
 }
 
-############################################################
+##########################################################
 # Main process: menu-driven checkpoint selection loop
-############################################################
-
+##########################################################
 first_checkpoint=$(load_checkpoint)
 first_index=0
 for i in "${!CHECKPOINTS[@]}"; do
-  if [[ "${CHECKPOINTS[$i]}" == "$first_checkpoint" ]]; then
-    first_index=$i
-    break
-  fi
+  if [[ "${CHECKPOINTS[$i]}" == "$first_checkpoint" ]]; then first_index=$i; break; fi
 done
 
 if [[ "$first_checkpoint" == "START" ]]; then
@@ -520,7 +518,6 @@ else
 fi
 
 while [[ "$finished" != "1" ]]; do
-  # Check again if all are complete
   is_any_incomplete
   incomplete="$?"
   if [[ $incomplete -ne 0 ]]; then
@@ -531,8 +528,7 @@ while [[ "$finished" != "1" ]]; do
   choice=$(choose_checkpoint)
   case "$choice" in
     "r")
-      # run next incomplete
-      statuses=($(get_checkpoint_status))
+      statuses=($(get_checkpoint_status_array))
       for i in "${!CHECKPOINTS[@]}"; do
         if [[ "${statuses[$i]}" == "incomplete" ]]; then
           run_checkpoint_by_name "${CHECKPOINTS[$i]}"
@@ -541,8 +537,7 @@ while [[ "$finished" != "1" ]]; do
       done
       ;;
     "a")
-      # run all remaining incomplete
-      statuses=($(get_checkpoint_status))
+      statuses=($(get_checkpoint_status_array))
       for i in "${!CHECKPOINTS[@]}"; do
         if [[ "${statuses[$i]}" == "incomplete" ]]; then
           run_checkpoint_by_name "${CHECKPOINTS[$i]}"
@@ -551,7 +546,6 @@ while [[ "$finished" != "1" ]]; do
       finished="1"
       ;;
     "c")
-      # choose specific
       read -r -p "Enter checkpoint number to run: " num
       if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 )) && (( num <= CHECKPOINTS_TOTAL )); then
         run_checkpoint_by_name "${CHECKPOINTS[$((num-1))]}"
@@ -577,12 +571,14 @@ CURRENT_SWAP=$(free -m | awk '/^Swap:/ {print $2}')
 SWAP_STATE=$([ "$CURRENT_SWAP" -ge 1024 ] && echo "enabled" || echo "disabled")
 VNC_SERVICE_STATUS=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
 UFW_STATUS=$(sudo ufw status | grep -qw "active" && echo "enabled" || echo "disabled")
-SPI_STATE=$(grep -q '^dtparam=spi=on' /boot/config.txt && echo "enabled" || echo "disabled")
-I2C_STATE=$(grep -q '^dtparam=i2c_arm=on' /boot/config.txt && echo "enabled" || echo "disabled")
+SPI_STATE=$(grep -q '^dtparam=spi=on' /boot/config.txt 2>/dev/null && echo "enabled" || echo "disabled")
+I2C_STATE=$(grep -q '^dtparam=i2c_arm=on' /boot/config.txt 2>/dev/null && echo "enabled" || echo "disabled")
 CAMERA_STATE=$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")
 GIT_NAME="$(git config --global user.name 2>/dev/null || echo "not set")"
 GIT_EMAIL="$(git config --global user.email 2>/dev/null || echo "not set")"
 PYTHON_PKGS_INSTALLED=$(pip3 list | grep -qw requests && echo "installed" || echo "not installed")
+PROFILE_STATUS="$(grep PROFILE= $STATE_FILE 2>/dev/null | cut -d= -f2 | grep -oE '[^ ]+' || echo "not set")"
+HOSTNAME_DISPLAY="$(hostname)"
 
 echo ""
 echo "=========================================="
@@ -590,6 +586,8 @@ log_success "Setup completed successfully!"
 echo "=========================================="
 echo ""
 echo "Configuration:"
+echo "  Hostname: $HOSTNAME_DISPLAY"
+echo "  Profile: $PROFILE_STATUS"
 echo "  Swap: $SWAP_STATE"
 echo "  SPI: $SPI_STATE"
 echo "  I2C: $I2C_STATE"
