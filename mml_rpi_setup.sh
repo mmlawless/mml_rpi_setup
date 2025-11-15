@@ -185,7 +185,7 @@ prompt_yn() {
 # Script variables/state
 ############################################################
 
-SCRIPT_VERSION="2025-11-15c"
+SCRIPT_VERSION="2025-11-15d"
 SCRIPT_HASH="PLACEHOLDER_HASH"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
