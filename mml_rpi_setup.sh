@@ -28,13 +28,10 @@ log_debug()    { [ "${DEBUG:-0}" -eq 1 ] && echo -e "[DEBUG $(date +%H:%M:%S)] $
 install_packages() {
   local package_list=("$@")
   [ ${#package_list[@]} -eq 0 ] && return 0
-
   log_info "Installing: ${package_list[*]}"
   [ "${DRY_RUN:-0}" -eq 1 ] && return 0
-
   local max_retries=3
   local attempt=1
-
   while [ $attempt -le $max_retries ]; do
     if sudo apt-get install -y "${package_list[@]}"; then
       log_success "Packages installed"
@@ -50,7 +47,6 @@ install_packages() {
     sudo apt-get update -y || true
     attempt=$((attempt + 1))
   done
-
   return 1
 }
 
@@ -69,7 +65,6 @@ validate_number() {
   local value="$1"
   local min="${2:-0}"
   local max="${3:-999999}"
-
   [[ "$value" =~ ^[0-9]+$ ]] || return 1
   [ "$value" -ge "$min" ] && [ "$value" -le "$max" ]
 }
@@ -122,27 +117,21 @@ is_checkpoint_passed() {
   local checkpoint="$1"
   local current
   current=$(load_checkpoint)
-
   local -a checkpoints=(
     START LOCALE DETECT HOSTNAME NETWORK SWAP
     UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT
     EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE
   )
-
   [ "$current" = "COMPLETE" ] && return 0
-
   local current_idx=-1
   local check_idx=-1
-
   for i in "${!checkpoints[@]}"; do
     [ "${checkpoints[$i]}" = "$current" ] && current_idx=$i
     [ "${checkpoints[$i]}" = "$checkpoint" ] && check_idx=$i
   done
-
   [ $check_idx -eq -1 ] && return 1
   [ $current_idx -eq -1 ] && return 1
   [ $current_idx -le $check_idx ] && return 1
-
   return 0
 }
 
@@ -189,7 +178,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-15ff"
+SCRIPT_VERSION="2025-11-15gg"
 SCRIPT_HASH="PLACEHOLDER_HASH"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
@@ -231,12 +220,28 @@ chmod 600 "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 ############################################################
-# Checkpoint names and complete checkpoint reporting
+# Checkpoint names and completed status helpers
 ############################################################
 CHECKPOINTS=(START LOCALE DETECT HOSTNAME NETWORK SWAP UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE)
-checkpoint_menu=("${CHECKPOINTS[@]}")
+CHECKPOINTS_TOTAL=${#CHECKPOINTS[@]}
 
-get_completed_checkpoints() {
+get_checkpoint_status() {
+  local last=$(load_checkpoint)
+  local last_index=-1
+  local status=()
+  for i in "${!CHECKPOINTS[@]}"; do
+    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then
+      last_index=$i
+      break
+    fi
+  done
+  for i in "${!CHECKPOINTS[@]}"; do
+    if [[ $i -le $last_index ]]; then status+=("completed"); else status+=("incomplete"); fi
+  done
+  echo "${status[@]}"
+}
+
+is_any_incomplete() {
   local last=$(load_checkpoint)
   local last_index=-1
   for i in "${!CHECKPOINTS[@]}"; do
@@ -245,68 +250,53 @@ get_completed_checkpoints() {
       break
     fi
   done
-  local completed=()
-  if [[ $last_index -ge 0 ]]; then
-    for c in $(seq 0 $last_index); do completed+=("${CHECKPOINTS[$c]}"); done
+  if [[ $last_index -eq $((CHECKPOINTS_TOTAL - 1)) ]]; then
+    return 1
+  else
+    return 0
   fi
-  echo "${completed[*]}"
 }
-echo ""
-echo "=========================================="
-completed=$(get_completed_checkpoints)
-echo "Completed Checkpoints (last complete: $(load_checkpoint)):"
-echo "  ${completed:-None}"
-echo "=========================================="
-echo ""
 
-############################################################
-# Interactive checkpoint menu for selecting actions
-############################################################
-choose_checkpoint() {
-  echo "Select a checkpoint/process to run:"
-  for i in "${!checkpoint_menu[@]}"; do
-    printf "  %2d) %s\n" $((i+1)) "${checkpoint_menu[$i]}"
+draw_menu() {
+  local statuses=($(get_checkpoint_status))
+  echo ""
+  echo -e "${CYAN}Checkpoint Progress:${NC}"
+  for i in "${!CHECKPOINTS[@]}"; do
+    if [[ "${statuses[$i]}" == "completed" ]]; then
+      printf "${GREEN}%2d) %-14s [COMPLETED]${NC}\n" $((i+1)) "${CHECKPOINTS[$i]}"
+    else
+      printf "${RED}%2d) %-14s [INCOMPLETE]${NC}\n" $((i+1)) "${CHECKPOINTS[$i]}"
+    fi
   done
   echo ""
-  echo "Or enter blank to run all from the next incomplete."
-  read -r -p "Enter checkpoint number or blank [all]: " choice
-  if [[ -z "$choice" ]]; then
-    echo "ALL"
-    return
+}
+
+choose_checkpoint() {
+  draw_menu
+  echo "Options:"
+  echo "  [r]un next incomplete checkpoint"
+  echo "  [a]ll remaining"
+  echo "  [c]hoose specific"
+  echo "  [q]uit"
+  # If all completed, give option to run nothing or select for change!
+  is_any_incomplete
+  local incomplete="$?"
+  if [[ $incomplete -ne 0 ]]; then
+    echo -e "${GREEN}All checkpoints completed. Choose 'c' to re-run/config any step or 'q' to exit.${NC}"
   fi
-  # Validate
-  if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 )) && (( choice <= ${#checkpoint_menu[@]} )); then
-    echo "${checkpoint_menu[$((choice-1))]}"
-    return
-  fi
-  echo "ALL"
+  read -r -p "Your choice [r/a/c/q]: " action
+  action="${action,,}" # lowercase
+  echo "$action"
 }
 
 ############################################################
 # Individual checkpoint logic as separate functions
 ############################################################
 
-run_START() {
-  log_info "START: Script initialized."
-  save_checkpoint "START"
-}
-
-run_LOCALE() {
-  log_info "Setting up locale (en_GB.UTF-8)..."
-  sudo apt-get install -y locales
-  sudo locale-gen en_GB.UTF-8
-  sudo update-locale LANG=en_GB.UTF-8
-  log_success "Locale configured successfully"
-  save_checkpoint "LOCALE"
-}
-
-run_DETECT() {
-  log_info "Detecting hardware..."
-  log_success "Hardware detection is complete"
-  save_checkpoint "DETECT"
-}
-
-run_HOSTNAME() {
+run_START()       { log_info "START: Script initialized."; save_checkpoint "START"; }
+run_LOCALE()      { sudo apt-get install -y locales; sudo locale-gen en_GB.UTF-8; sudo update-locale LANG=en_GB.UTF-8; log_success "Locale configured"; save_checkpoint "LOCALE"; }
+run_DETECT()      { log_info "Hardware detection is complete"; save_checkpoint "DETECT"; }
+run_HOSTNAME()    {
   local generated="LH-PI-NEW"
   local current_hostname=$(hostname)
   local input
@@ -328,8 +318,7 @@ run_HOSTNAME() {
   log_success "Hostname set"
   save_checkpoint "HOSTNAME"
 }
-
-run_NETWORK() {
+run_NETWORK()     {
   local iface
   read -r -p "Configure static network interface? (enter iface, blank=skip): " iface
   if [[ -n "$iface" ]]; then
@@ -349,8 +338,7 @@ run_NETWORK() {
   fi
   save_checkpoint "NETWORK"
 }
-
-run_SWAP() {
+run_SWAP()        {
   local current_swap=$(free -m | awk '/^Swap:/ {print $2}')
   local state=$([ "$current_swap" -ge 1024 ] && echo "enabled" || echo "disabled")
   prompt_feature_toggle "1024MB Swap" "$state" \
@@ -358,46 +346,24 @@ run_SWAP() {
     "sudo dphys-swapfile swapoff; sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=100/' /etc/dphys-swapfile; sudo dphys-swapfile setup; sudo dphys-swapfile swapon"
   save_checkpoint "SWAP"
 }
-
-run_UPDATE() {
-  log_info "Updating package lists..."
-  sudo apt-get update -y
-  log_success "Packages updated."
-  save_checkpoint "UPDATE"
-}
-
-run_UPGRADE() {
-  log_info "Upgrading system packages..."
-  sudo apt-get upgrade -y
-  log_success "Packages upgraded."
-  save_checkpoint "UPGRADE"
-}
-
-run_ESSENTIAL() {
-  local packages=(curl wget git vim htop tree unzip apt-transport-https ca-certificates gnupg lsb-release net-tools ufw arping neofetch)
-  log_info "Installing essential packages..."
-  install_packages "${packages[@]}"
-  log_success "Essential packages installed."
-  save_checkpoint "ESSENTIAL"
-}
-
-run_SECURITY() {
+run_UPDATE()      { log_info "Updating package lists..."; sudo apt-get update -y; log_success "Packages updated."; save_checkpoint "UPDATE"; }
+run_UPGRADE()     { log_info "Upgrading system packages..."; sudo apt-get upgrade -y; log_success "Packages upgraded."; save_checkpoint "UPGRADE"; }
+run_ESSENTIAL()   { local packages=(curl wget git vim htop tree unzip apt-transport-https ca-certificates gnupg lsb-release net-tools ufw arping neofetch); install_packages "${packages[@]}"; log_success "Essential packages installed."; save_checkpoint "ESSENTIAL"; }
+run_SECURITY()    {
   local ufw_status=$(sudo ufw status | grep -qw "active" && echo "enabled" || echo "disabled")
   prompt_feature_toggle "Firewall (UFW)" "$ufw_status" \
     "sudo ufw --force enable" \
     "sudo ufw disable"
   save_checkpoint "SECURITY"
 }
-
-run_VNC() {
+run_VNC()         {
   local vnc_status=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
   prompt_feature_toggle "VNC" "$vnc_status" \
     "sudo systemctl enable --now vncserver-x11-serviced.service" \
     "sudo systemctl disable --now vncserver-x11-serviced.service"
   save_checkpoint "VNC"
 }
-
-run_GIT() {
+run_GIT()         {
   local git_name="$(git config --global user.name 2>/dev/null || true)"
   local git_email="$(git config --global user.email 2>/dev/null || true)"
   if [[ -n "$git_name" && -n "$git_email" ]]; then
@@ -418,8 +384,7 @@ run_GIT() {
   log_success "Git configured as $git_name <$git_email>"
   save_checkpoint "GIT"
 }
-
-run_EMAIL() {
+run_EMAIL()       {
   read -r -p "Configure email (for msmtp)? (y/n) [n]: " ans
   if [[ "${ans,,}" == "y" ]]; then
     echo "Please enter Gmail address: "
@@ -452,7 +417,6 @@ EOF
   fi
   save_checkpoint "EMAIL"
 }
-
 run_RASPI_CONFIG() {
   SPI_STATE=$(grep -q '^dtparam=spi=on' /boot/config.txt && echo "enabled" || echo "disabled")
   prompt_feature_toggle "SPI" "$SPI_STATE" \
@@ -468,29 +432,24 @@ run_RASPI_CONFIG() {
     "sudo raspi-config nonint do_camera 1"
   save_checkpoint "RASPI_CONFIG"
 }
-
-run_PYTHON() {
+run_PYTHON()      {
   local py_pkg_state=$(pip3 list | grep -qw requests && echo "installed" || echo "not installed")
   prompt_feature_toggle "requests (Python package)" "$py_pkg_state" \
     "pip3 install --user --upgrade requests" \
     "pip3 uninstall -y requests"
   save_checkpoint "PYTHON"
 }
-
-run_PROFILE() {
+run_PROFILE()     {
   local profiles=("generic" "web" "iot" "media" "dev")
   echo "Available profiles:"
-  for i in "${!profiles[@]}"; do
-    echo "  $((i+1))) ${profiles[$i]}"
-  done
+  for i in "${!profiles[@]}"; do echo "  $((i+1))) ${profiles[$i]}"; done
   read -r -p "Select profile number [1]: " profnum
   profnum="${profnum:-1}"
   local profsel=${profiles[$((profnum-1))]}
   log_info "Profile selected: $profsel"
   save_checkpoint "PROFILE"
 }
-
-run_ALIASES() {
+run_ALIASES()     {
   mkdir -p ~/projects ~/scripts ~/backup ~/logs
   if ! grep -q "# === Custom Aliases ===" ~/.bashrc; then
     cat >> ~/.bashrc <<'BASHEOF'
@@ -510,14 +469,7 @@ BASHEOF
   log_success "Custom aliases and directories created"
   save_checkpoint "ALIASES"
 }
-
-run_COMPLETE() {
-  save_checkpoint "COMPLETE"
-}
-
-############################################################
-# Main process: menu-driven checkpoint selection loop
-############################################################
+run_COMPLETE()    { save_checkpoint "COMPLETE"; }
 
 function run_checkpoint_by_name() {
   local name="$1"
@@ -544,35 +496,83 @@ function run_checkpoint_by_name() {
   esac
 }
 
-while true; do
-  echo ""
-  selection=$(choose_checkpoint)
-  if [[ "$selection" == "ALL" ]]; then
-    current=$(load_checkpoint)
-    start_idx=0
-    for i in "${!CHECKPOINTS[@]}"; do
-      if [[ "${CHECKPOINTS[$i]}" == "$current" ]]; then
-        start_idx=$((i+1))
-        break
-      fi
-    done
-    for ((i=start_idx; i<${#CHECKPOINTS[@]}; i++)); do
-      run_checkpoint_by_name "${CHECKPOINTS[$i]}"
-    done
+############################################################
+# Main process: menu-driven checkpoint selection loop
+############################################################
+
+first_checkpoint=$(load_checkpoint)
+first_index=0
+for i in "${!CHECKPOINTS[@]}"; do
+  if [[ "${CHECKPOINTS[$i]}" == "$first_checkpoint" ]]; then
+    first_index=$i
     break
-  else
-    run_checkpoint_by_name "$selection"
-    echo ""
-    read -r -p "Return to menu? (y/n) [y]: " again
-    [[ "${again,,}" == "n" ]] && break
   fi
+done
+
+if [[ "$first_checkpoint" == "START" ]]; then
+  log_info "No checkpoints previously completed; running setup from scratch."
+  for ((i=0; i<CHECKPOINTS_TOTAL; i++)); do
+    run_checkpoint_by_name "${CHECKPOINTS[$i]}"
+  done
+  finished="1"
+else
+  finished="0"
+fi
+
+while [[ "$finished" != "1" ]]; do
+  # Check again if all are complete
+  is_any_incomplete
+  incomplete="$?"
+  if [[ $incomplete -ne 0 ]]; then
+    echo -e "${GREEN}All checkpoints have already been completed.${NC}"
+    break
+  fi
+
+  choice=$(choose_checkpoint)
+  case "$choice" in
+    "r")
+      # run next incomplete
+      statuses=($(get_checkpoint_status))
+      for i in "${!CHECKPOINTS[@]}"; do
+        if [[ "${statuses[$i]}" == "incomplete" ]]; then
+          run_checkpoint_by_name "${CHECKPOINTS[$i]}"
+          break
+        fi
+      done
+      ;;
+    "a")
+      # run all remaining incomplete
+      statuses=($(get_checkpoint_status))
+      for i in "${!CHECKPOINTS[@]}"; do
+        if [[ "${statuses[$i]}" == "incomplete" ]]; then
+          run_checkpoint_by_name "${CHECKPOINTS[$i]}"
+        fi
+      done
+      finished="1"
+      ;;
+    "c")
+      # choose specific
+      read -r -p "Enter checkpoint number to run: " num
+      if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 )) && (( num <= CHECKPOINTS_TOTAL )); then
+        run_checkpoint_by_name "${CHECKPOINTS[$((num-1))]}"
+      else
+        log_warning "Invalid selection."
+      fi
+      ;;
+    "q")
+      log_info "Quitting setup script."
+      finished="1"
+      ;;
+    *)
+      log_warning "Unknown menu choice."
+      ;;
+  esac
 done
 
 ############################################################
 # Summary and reboot prompt
 ############################################################
 
-# Set all states for summary
 CURRENT_SWAP=$(free -m | awk '/^Swap:/ {print $2}')
 SWAP_STATE=$([ "$CURRENT_SWAP" -ge 1024 ] && echo "enabled" || echo "disabled")
 VNC_SERVICE_STATUS=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
