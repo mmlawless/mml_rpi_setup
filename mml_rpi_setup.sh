@@ -1,6 +1,12 @@
 #!/bin/bash
-set -euo pipefail
+# Ignore SIGPIPE to prevent broken pipe errors
+trap '' PIPE
 
+# Also handle it for any child processes
+export PYTHONIOENCODING=utf-8
+export PYTHONDONTWRITEBYTECODE=1
+
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 ############################################################
