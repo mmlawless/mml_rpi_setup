@@ -191,8 +191,8 @@ echo ""
 setup_logging() {
   touch "$LOG_FILE"
   chmod 600 "$LOG_FILE"
-  exec > >(tee -a "$LOG_FILE")
-  exec 2>&1
+exec > >(tee -a "$LOG_FILE" || true)
+exec 2>&1
   log_info "=== Script started at $(date) ==="
   log_info "Version: $SCRIPT_VERSION"
 }
