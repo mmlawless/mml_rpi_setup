@@ -165,7 +165,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-16"
+SCRIPT_VERSION="2025-11-16a"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 LOG_FILE="$HOME/.rpi_setup.log"
@@ -191,7 +191,7 @@ echo ""
 setup_logging() {
   touch "$LOG_FILE"
   chmod 600 "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE" || true)
+
 exec 2>&1
   log_info "=== Script started at $(date) ==="
   log_info "Version: $SCRIPT_VERSION"
