@@ -11,6 +11,10 @@ export PYTHONDONTWRITEBYTECODE=1
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
+if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
+  exec < /dev/tty
+fi
+
 ############################################################
 # Function definitions (all at top for pipe-to-bash)
 ############################################################
@@ -285,7 +289,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-18-universal"
+SCRIPT_VERSION="2025-11-19"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 LOG_FILE="$HOME/.rpi_setup.log"
