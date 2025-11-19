@@ -1,5 +1,5 @@
 #!/bin/bash
-# Universal Raspberry Pi Setup Script (no menu version)
+# MML Universal Raspberry Pi Setup Script (simple + menu)
 # Compatible with Legacy and Modern Raspberry Pi OS
 # Ignore SIGPIPE to prevent broken pipe errors
 trap '' PIPE
@@ -36,8 +36,22 @@ log_success()  { echo -e "${GREEN}[SUCCESS $(date +%H:%M:%S)]${NC} $1"; }
 log_warning()  { echo -e "${YELLOW}[WARNING $(date +%H:%M:%S)]${NC} $1"; }
 log_error()    { echo -e "${RED}[ERROR $(date +%H:%M:%S)]${NC} $1" >&2; }
 log_progress() { echo -e "${CYAN}[PROGRESS $(date +%H:%M:%S)]${NC} $1"; }
-log_temp()     { echo -e "${MAGENTA}[TEMP $(date +%H:%M:%S)]${NC} $1"; }
 log_debug()    { [ "${DEBUG:-0}" -eq 1 ] && echo -e "[DEBUG $(date +%H:%M:%S)] $1" || true; }
+
+# --- Argument parsing (e.g. --force) ---
+FORCE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)
+      FORCE=1
+      shift
+      ;;
+    *)
+      log_warning "Unknown argument: $1"
+      shift
+      ;;
+  esac
+done
 
 # --- System Detection Functions ---
 detect_boot_config_path() {
@@ -91,9 +105,13 @@ check_system_compatibility() {
   
   # Check if running on Raspberry Pi
   if [ ! -f /proc/device-tree/model ] && [ ! -f /etc/rpi-issue ]; then
-    log_warning "This doesn't appear to be a Raspberry Pi"
-    read -r -p "Continue anyway? (y/n) [n]: " ans
-    [[ "${ans,,}" != "y" ]] && exit 1
+    if [[ "$FORCE" -eq 1 ]]; then
+      log_warning "This doesn't appear to be a Raspberry Pi, but --force is set. Continuing anyway."
+    else
+      log_warning "This doesn't appear to be a Raspberry Pi"
+      read -r -p "Continue anyway? (y/n) [n]: " ans
+      [[ "${ans,,}" != "y" ]] && exit 1
+    fi
   fi
   
   # Check if running as root
@@ -292,7 +310,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-18-universal"
+SCRIPT_VERSION="2025-11-18-simple-menu"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 LOG_FILE="$HOME/.rpi_setup.log"
@@ -309,9 +327,9 @@ OS_VERSION=""
 clear
 cat <<EOF
 ╔══════════════════════════════════════════════════════╗
-║  MML Universal Raspberry Pi Setup Script             ║
+║  MML Universal Raspberry Pi Setup Script (Simple)    ║
 ║                                                      ║
-║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 9)) "")║
+║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 16)) "")║
 ╚══════════════════════════════════════════════════════╝
 EOF
 
@@ -353,7 +371,7 @@ get_current_status() {
   status["CAMERA"]="$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")"
   status["SWAP"]="$(free -m | awk '/^Swap:/ {print ($2 >= 1024 ? "enabled" : "disabled") }')"
   status["UFW"]="$(sudo ufw status 2>/dev/null | grep -qw "active" && echo "enabled" || echo "disabled")"
-  status["VNC"]="$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")"
+  status["VNC"]="$(systemctl is-enabled vncserver-x11-serviced.service 0>/dev/null 2>&1 | grep -q enabled && echo "enabled" || echo "disabled")"
   status["GIT_USER"]="$(git config --global user.name 2>/dev/null || echo "not set")"
   status["GIT_EMAIL"]="$(git config --global user.email 2>/dev/null || echo "not set")"
   status["REQUESTS"]="$(pip3 list 2>/dev/null | grep -qw requests && echo "installed" || echo "not installed")"
@@ -378,6 +396,86 @@ get_checkpoint_status_array() {
     fi
   done
   echo "${out[@]}"
+}
+
+is_any_incomplete() {
+  local last
+  last=$(load_checkpoint)
+  local last_index=-1
+  for i in "${!CHECKPOINTS[@]}"; do
+    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then last_index=$i; fi
+  done
+  if [[ $last_index -eq $((CHECKPOINTS_TOTAL - 1)) ]]; then
+    return 1   # none incomplete
+  else
+    return 0   # some incomplete
+  fi
+}
+
+draw_menu() {
+  # shellcheck disable=SC2207
+  local status_arr=($(get_checkpoint_status_array))
+  # shellcheck disable=SC2207
+  IFS=' ' read -r spi i2c cam swp ufw vnc gituser gitemail requests hname prof <<< "$(get_current_status)"
+  echo ""
+  echo -e "${CYAN}Checkpoint Progress:${NC}"
+  for i in "${!CHECKPOINTS[@]}"; do
+    item="${CHECKPOINTS[$i]}"
+    stat="${status_arr[$i]}"
+    color=$([[ "$stat" == "completed" ]] && echo "$GREEN" || echo "$RED")
+    extra=""
+    case "$item" in
+      "SPI")        extra="Status: $spi" ;;
+      "I2C")        extra="Status: $i2c" ;;
+      "CAMERA")     extra="Status: $cam" ;;
+      "SWAP")       extra="Status: $swp" ;;
+      "SECURITY")   extra="UFW: $ufw" ;;
+      "VNC")        extra="Status: $vnc" ;;
+      "GIT")        extra="User: $gituser, Email: $gitemail" ;;
+      "PYTHON")     extra="requests: $requests" ;;
+      "HOSTNAME")   extra="Current: $hname" ;;
+      "PROFILE")    extra="Profile: $prof" ;;
+    esac
+    printf "%s%2d) %-14s [%s]%s %s\n" "$color" $((i+1)) "$item" "$stat" "$NC" "$extra"
+  done
+  echo ""
+}
+
+choose_checkpoint() {
+  draw_menu
+  echo -e "${CYAN}Menu options:${NC}"
+  echo "  r = Run the next incomplete checkpoint"
+  echo "  a = Run all remaining checkpoints"
+  echo "  c = Choose a specific checkpoint by number"
+  echo "  q = Quit the setup script"
+  echo ""
+  is_any_incomplete
+  local incomplete="$?"
+  if [[ $incomplete -ne 0 ]]; then
+    echo -e "${GREEN}All checkpoints completed. Choose 'c' to re-run/config any step or 'q' to exit.${NC}"
+  fi
+
+  while true; do
+    read -r -p "Your choice [r/a/c/q]: " action
+    action="${action,,}"
+    # Trim trailing CR/LF/space/tab so valid choices aren't rejected
+    action="${action%%[$'\r\n\t ']*}"
+
+    # Default to "r" if user just presses Enter
+    if [[ -z "$action" ]]; then
+      action="r"
+    fi
+
+    case "$action" in
+      r|a|c|q)
+        echo "$action"
+        return 0
+        ;;
+      *)
+        log_warning "Unknown menu choice '$action'. Please enter r, a, c, or q."
+        ;;
+    esac
+  done
 }
 
 ############################################################
@@ -738,85 +836,12 @@ run_checkpoint_by_name() {
 }
 
 ##########################################################
-# Main process: AUTOMATICALLY run remaining checkpoints
+# Main process: menu-driven checkpoint selection loop
 ##########################################################
 first_checkpoint=$(load_checkpoint)
 log_info "Last recorded checkpoint: $first_checkpoint"
 
-# Show quick status
-statuses=($(get_checkpoint_status_array))
-echo ""
-echo -e "${CYAN}Checkpoint Progress:${NC}"
-for i in "${!CHECKPOINTS[@]}"; do
-  item="${CHECKPOINTS[$i]}"
-  stat="${statuses[$i]}"
-  color=$([[ "$stat" == "completed" ]] && echo "$GREEN" || echo "$RED")
-  printf "%s%2d) %-14s [%s]%s\n" "$color" $((i+1)) "$item" "$stat" "$NC"
-done
-echo ""
+finished="0"
 
-log_info "Automatically running all remaining checkpoints (no menu)..."
-
-for i in "${!CHECKPOINTS[@]}"; do
-  if [[ "${statuses[$i]}" == "incomplete" ]]; then
-    run_checkpoint_by_name "${CHECKPOINTS[$i]}"
-  fi
-done
-
-############################################################
-# Summary and reboot prompt
-############################################################
-
-CURRENT_SWAP=$(free -m | awk '/^Swap:/ {print $2}')
-SWAP_STATE=$([ "$CURRENT_SWAP" -ge 1024 ] && echo "enabled" || echo "disabled")
-VNC_SERVICE_STATUS=$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")
-UFW_STATUS=$(sudo ufw status 2>/dev/null | grep -qw "active" && echo "enabled" || echo "disabled")
-SPI_STATE=$(grep -q '^dtparam=spi=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")
-I2C_STATE=$(grep -q '^dtparam=i2c_arm=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")
-CAMERA_STATE=$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")
-GIT_NAME="$(git config --global user.name 2>/dev/null || echo "not set")"
-GIT_EMAIL="$(git config --global user.email 2>/dev/null || echo "not set")"
-PYTHON_PKGS_INSTALLED=$(pip3 list 2>/dev/null | grep -qw requests && echo "installed" || echo "not installed")
-PROFILE_STATUS="$(grep PROFILE= $STATE_FILE 2>/dev/null | cut -d= -f2 | grep -oE '[^ ]+' || echo "not set")"
-HOSTNAME_DISPLAY="$(hostname)"
-
-echo ""
-echo "=========================================="
-log_success "Setup completed successfully!"
-echo "=========================================="
-echo ""
-echo "System Information:"
-if [ -f /proc/device-tree/model ]; then
-  echo "  Model: $(tr -d '\0' < /proc/device-tree/model)"
-fi
-echo "  OS: $(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
-echo "  Kernel: $(uname -r)"
-echo "  Boot Config: $BOOT_CONFIG"
-echo "  Network Manager: $NETWORK_MANAGER"
-echo ""
-echo "Configuration:"
-echo "  Hostname: $HOSTNAME_DISPLAY"
-echo "  Profile: $PROFILE_STATUS"
-echo "  Swap: $SWAP_STATE ($CURRENT_SWAP MB)"
-echo "  SPI: $SPI_STATE"
-echo "  I2C: $I2C_STATE"
-echo "  Camera: $CAMERA_STATE"
-echo "  VNC: $VNC_SERVICE_STATUS"
-echo "  Firewall (UFW): $UFW_STATUS"
-echo "  Git: $GIT_NAME <$GIT_EMAIL>"
-echo "  Python requests: $PYTHON_PKGS_INSTALLED"
-echo ""
-
-run_neofetch_if_installed
-
-log_warning "Reboot required to finalize all changes!"
-echo ""
-if prompt_yn "Reboot now? (y/n): " n; then
-  log_info "Rebooting in 5 seconds... (Ctrl+C to cancel)"
-  sleep 5
-  sudo reboot
-else
-  log_info "Remember to reboot when convenient: sudo reboot"
-  log_success "Setup complete! Enjoy your Raspberry Pi!"
-fi
-
+while [[ "$finished" != "1" ]]; do
+  choice
