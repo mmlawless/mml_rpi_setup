@@ -1,5 +1,5 @@
 #!/bin/bash
-# MML Universal Raspberry Pi Setup Script (simple + menu)
+# MML Universal Raspberry Pi Setup Script (simple + menu) a
 # Compatible with Legacy and Modern Raspberry Pi OS
 # Ignore SIGPIPE to prevent broken pipe errors
 trap '' PIPE
