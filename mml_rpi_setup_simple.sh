@@ -29,8 +29,6 @@ MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-trap '' PIPE
-
 log_info()     { echo -e "${BLUE}[INFO $(date +%H:%M:%S)]${NC} $1"; }
 log_success()  { echo -e "${GREEN}[SUCCESS $(date +%H:%M:%S)]${NC} $1"; }
 log_warning()  { echo -e "${YELLOW}[WARNING $(date +%H:%M:%S)]${NC} $1"; }
@@ -38,10 +36,7 @@ log_error()    { echo -e "${RED}[ERROR $(date +%H:%M:%S)]${NC} $1" >&2; }
 log_progress() { echo -e "${CYAN}[PROGRESS $(date +%H:%M:%S)]${NC} $1"; }
 log_debug()    { [ "${DEBUG:-0}" -eq 1 ] && echo -e "[DEBUG $(date +%H:%M:%S)] $1" || true; }
 
-############################################################
-# Argument parsing (e.g. --force)
-############################################################
-
+# --- Argument parsing (e.g. --force) ---
 FORCE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -237,27 +232,9 @@ clear_checkpoint() {
   log_debug "Checkpoint cleared"
 }
 
-is_checkpoint_passed() {
-  local checkpoint="$1"
-  local current
-  current=$(load_checkpoint)
-  local -a checkpoints=(
-    START LOCALE DETECT HOSTNAME NETWORK SWAP
-    UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT
-    EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE
-  )
-  [ "$current" = "COMPLETE" ] && return 0
-  local current_idx=-1
-  local check_idx=-1
-  for i in "${!checkpoints[@]}"; do
-    [ "${checkpoints[$i]}" = "$current" ] && current_idx=$i
-    [ "${checkpoints[$i]}" = "$checkpoint" ] && check_idx=$i
-  done
-  [ $check_idx -eq -1 ] && return 1
-  [ $current_idx -eq -1 ] && return 1
-  [ $current_idx -ge $check_idx ] && return 0
-  return 1
-}
+############################################################
+# Prompt helpers
+############################################################
 
 prompt_feature_toggle() {
   local feature="$1"
@@ -313,7 +290,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-18-simple-menu"
+SCRIPT_VERSION="2025-11-19-simple 2a"
 STATE_FILE="$HOME/.rpi_setup_state"
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 LOG_FILE="$HOME/.rpi_setup.log"
@@ -367,20 +344,9 @@ check_system_compatibility
 CHECKPOINTS=(START LOCALE DETECT HOSTNAME NETWORK SWAP UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE)
 CHECKPOINTS_TOTAL=${#CHECKPOINTS[@]}
 
-get_current_status() {
-  declare -A status
-  status["SPI"]="$(grep -q '^dtparam=spi=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")"
-  status["I2C"]="$(grep -q '^dtparam=i2c_arm=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")"
-  status["CAMERA"]="$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")"
-  status["SWAP"]="$(free -m | awk '/^Swap:/ {print ($2 >= 1024 ? "enabled" : "disabled") }')"
-  status["UFW"]="$(sudo ufw status 2>/dev/null | grep -qw "active" && echo "enabled" || echo "disabled")"
-  status["VNC"]="$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")"
-  status["GIT_USER"]="$(git config --global user.name 2>/dev/null || echo "not set")"
-  status["GIT_EMAIL"]="$(git config --global user.email 2>/dev/null || echo "not set")"
-  status["REQUESTS"]="$(pip3 list 2>/dev/null | grep -qw requests && echo "installed" || echo "not installed")"
-  status["HOSTNAME"]="$(hostname)"
-  status["PROFILE"]="$(grep PROFILE= $STATE_FILE 2>/dev/null | cut -d= -f2 | grep -oE '[^ ]+' || echo "not set")"
-  echo "${status[@]}"
+save_checkpoint_if_newer() {
+  # simple helper if you ever want to enforce order; for now we just save directly
+  save_checkpoint "$1"
 }
 
 get_checkpoint_status_array() {
@@ -401,18 +367,20 @@ get_checkpoint_status_array() {
   echo "${out[@]}"
 }
 
-is_any_incomplete() {
-  local last
-  last=$(load_checkpoint)
-  local last_index=-1
-  for i in "${!CHECKPOINTS[@]}"; do
-    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then last_index=$i; fi
-  done
-  if [[ $last_index -eq $((CHECKPOINTS_TOTAL - 1)) ]]; then
-    return 1   # none incomplete
-  else
-    return 0   # some incomplete
-  fi
+get_current_status() {
+  declare -A status
+  status["SPI"]="$(grep -q '^dtparam=spi=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")"
+  status["I2C"]="$(grep -q '^dtparam=i2c_arm=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")"
+  status["CAMERA"]="$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")"
+  status["SWAP"]="$(free -m | awk '/^Swap:/ {print ($2 >= 1024 ? "enabled" : "disabled") }')"
+  status["UFW"]="$(sudo ufw status 2>/dev/null | grep -qw "active" && echo "enabled" || echo "disabled")"
+  status["VNC"]="$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")"
+  status["GIT_USER"]="$(git config --global user.name 2>/dev/null || echo "not set")"
+  status["GIT_EMAIL"]="$(git config --global user.email 2>/dev/null || echo "not set")"
+  status["REQUESTS"]="$(pip3 list 2>/dev/null | grep -qw requests && echo "installed" || echo "not installed")"
+  status["HOSTNAME"]="$(hostname)"
+  status["PROFILE"]="$(grep PROFILE= $STATE_FILE 2>/dev/null | cut -d= -f2 | grep -oE '[^ ]+' || echo "not set")"
+  echo "${status[@]}"
 }
 
 draw_menu() {
@@ -448,16 +416,10 @@ choose_checkpoint() {
   draw_menu
   echo -e "${CYAN}Menu options:${NC}"
   echo "  r = Run the next incomplete checkpoint"
-  echo "  a = Run all remaining checkpoints"
+  echo "  a = Run all remaining incomplete checkpoints"
   echo "  c = Choose a specific checkpoint by number"
   echo "  q = Quit the setup script"
   echo ""
-  is_any_incomplete
-  local incomplete="$?"
-  if [[ $incomplete -ne 0 ]]; then
-    echo -e "${GREEN}All checkpoints completed. Choose 'c' to re-run/config any step or 'q' to exit.${NC}"
-  fi
-
   while true; do
     read -r -p "Your choice [r/a/c/q]: " action
     action="${action,,}"
@@ -844,38 +806,39 @@ run_checkpoint_by_name() {
 first_checkpoint=$(load_checkpoint)
 log_info "Last recorded checkpoint: $first_checkpoint"
 
-finished="0"
+finished=0
 
-while [[ "$finished" != "1" ]]; do
-  is_any_incomplete
-  incomplete="$?"
-  if [[ $incomplete -ne 0 ]]; then
-    echo -e "${GREEN}All checkpoints have already been completed.${NC}"
-  fi
-
+while [[ "$finished" != 1 ]]; do
   choice=$(choose_checkpoint)
   case "$choice" in
-    "r")
-      # run next incomplete checkpoint
+    r)
       statuses=($(get_checkpoint_status_array))
+      next_found=0
       for i in "${!CHECKPOINTS[@]}"; do
         if [[ "${statuses[$i]}" == "incomplete" ]]; then
           run_checkpoint_by_name "${CHECKPOINTS[$i]}"
+          next_found=1
           break
         fi
       done
+      if [[ $next_found -eq 0 ]]; then
+        log_info "No incomplete checkpoints left."
+      fi
       ;;
-    "a")
-      # run all remaining checkpoints
+    a)
       statuses=($(get_checkpoint_status_array))
+      any_run=0
       for i in "${!CHECKPOINTS[@]}"; do
         if [[ "${statuses[$i]}" == "incomplete" ]]; then
           run_checkpoint_by_name "${CHECKPOINTS[$i]}"
+          any_run=1
         fi
       done
-      finished="1"
+      if [[ $any_run -eq 0 ]]; then
+        log_info "No incomplete checkpoints left."
+      fi
       ;;
-    "c")
+    c)
       read -r -p "Enter checkpoint number to run: " num
       if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 )) && (( num <= CHECKPOINTS_TOTAL )); then
         run_checkpoint_by_name "${CHECKPOINTS[$((num-1))]}"
@@ -883,13 +846,9 @@ while [[ "$finished" != "1" ]]; do
         log_warning "Invalid selection."
       fi
       ;;
-    "q")
+    q)
       log_info "Quitting setup script."
-      finished="1"
-      ;;
-    *)
-      # Should not get here due to validation in choose_checkpoint
-      log_warning "Unknown menu choice."
+      finished=1
       ;;
   esac
 done
@@ -913,14 +872,14 @@ HOSTNAME_DISPLAY="$(hostname)"
 
 echo ""
 echo "=========================================="
-log_success "Setup completed successfully!"
+log_success "Setup completed (menu loop exited)."
 echo "=========================================="
 echo ""
 echo "System Information:"
 if [ -f /proc/device-tree/model ]; then
   echo "  Model: $(tr -d '\0' < /proc/device-tree/model)"
 fi
-echo "  OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+echo "  OS: $(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
 echo "  Kernel: $(uname -r)"
 echo "  Boot Config: $BOOT_CONFIG"
 echo "  Network Manager: $NETWORK_MANAGER"
@@ -940,13 +899,13 @@ echo ""
 
 run_neofetch_if_installed
 
-log_warning "Reboot required to finalize all changes!"
+log_warning "Reboot may be required to finalize all changes!"
 echo ""
-if prompt_yn "Reboot now? (y/n): " n; then
+if prompt_yn "Reboot now? (y/n) [n]:" n; then
   log_info "Rebooting in 5 seconds... (Ctrl+C to cancel)"
   sleep 5
   sudo reboot
 else
   log_info "Remember to reboot when convenient: sudo reboot"
-  log_success "Setup complete! Enjoy your Raspberry Pi!"
+  log_success "Setup menu finished! Enjoy your Raspberry Pi!"
 fi
