@@ -330,7 +330,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-18-simple-menu"
+SCRIPT_VERSION="2025-11-20"
 STATE_FILE="$HOME/.rpi_setup_state"
 LOG_FILE="$HOME/.rpi_setup.log"
 LOCK_DIR="/tmp/rpi_setup.lock"
@@ -346,7 +346,7 @@ OS_VERSION=""
 clear
 cat <<EOF
 ╔══════════════════════════════════════════════════════╗
-║  MML Universal Raspberry Pi Setup Script (Simple)    ║
+║  MML Universal Raspberry Pi Setup Script             ║
 ║                                                      ║
 ║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 16)) "")║
 ╚══════════════════════════════════════════════════════╝
@@ -776,6 +776,24 @@ BASHEOF
   save_checkpoint "ALIASES"
 }
 
+run_INFO_SCRIPT() {
+  local email
+
+  echo ""
+  read -r -p "Enter email for system info report [mmlawlessuk@gmail.com]: " email
+  email="${email:-mmlawlessuk@gmail.com}"
+
+  log_info "Running mml_rpi_info.sh for $email"
+
+  # Run the remote script; handle success/failure without killing this script
+  if curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_info/main/mml_rpi_info.sh \
+    | bash -s -- --email "$email"; then
+    log_success "System info/email script completed successfully."
+  else
+    log_error "System info/email script failed. Please check your network or URL."
+  fi
+}
+
 run_COMPLETE() {
   save_checkpoint "COMPLETE"
   log_success "All checkpoints completed!"
@@ -814,59 +832,65 @@ main_menu() {
   while true; do
     echo ""
     echo "================ Setup Menu ================"
-    echo "1) Run ALL checkpoints (full setup)"
-    echo "2) Run a SINGLE checkpoint"
-    echo "3) Quit"
-    echo "==========================================="
-    read -r -p "Select an option [1/2/3]: " choice
-    choice="${choice%%[$'\r\n\t ']*}"
+echo "1) Run ALL checkpoints (full setup)"
+echo "2) Run a SINGLE checkpoint"
+echo "3) Run system info/email script (mml_rpi_info)"
+echo "4) Quit"
+echo "==========================================="
+read -r -p "Select an option [1/2/3/4]: " choice
+choice="${choice%%[$'\r\n\t ']*}"
 
-    case "$choice" in
-      1|"")
-        # Run all checkpoints in order
-        echo ""
-        log_info "Running ALL checkpoints..."
-        for cp in "${CHECKPOINTS[@]}"; do
-          echo ""
-          log_info ">>> Running checkpoint: $cp"
-          if run_checkpoint_by_name "$cp"; then
-            log_success "Checkpoint $cp completed."
-          else
-            log_warning "Checkpoint $cp reported a failure; continuing."
-          fi
-        done
-        break
-        ;;
-      2)
-        echo ""
-        echo "Available checkpoints:"
-        local idx=1
-        for cp in "${CHECKPOINTS[@]}"; do
-          printf "  %2d) %s\n" "$idx" "$cp"
-          idx=$((idx+1))
-        done
-        read -r -p "Enter checkpoint number to run: " num
-        if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 )) && (( num <= ${#CHECKPOINTS[@]} )); then
-          local sel="${CHECKPOINTS[$((num-1))]}"
-          echo ""
-          log_info "Running single checkpoint: $sel"
-          if run_checkpoint_by_name "$sel"; then
-            log_success "Checkpoint $sel completed."
-          else
-            log_warning "Checkpoint $sel reported a failure."
-          fi
-        else
-          log_warning "Invalid selection."
-        fi
-        ;;
-      3|q|Q)
-        log_info "Quitting setup menu."
-        break
-        ;;
-      *)
-        log_warning "Unknown choice. Please enter 1, 2, or 3."
-        ;;
-    esac
+case "$choice" in
+  1|"")
+    # Run all checkpoints in order
+    echo ""
+    log_info "Running ALL checkpoints..."
+    for cp in "${CHECKPOINTS[@]}"; do
+      echo ""
+      log_info ">>> Running checkpoint: $cp"
+      if run_checkpoint_by_name "$cp"; then
+        log_success "Checkpoint $cp completed."
+      else
+        log_warning "Checkpoint $cp reported a failure; continuing."
+      fi
+    done
+    break
+    ;;
+  2)
+    echo ""
+    echo "Available checkpoints:"
+    local idx=1
+    for cp in "${CHECKPOINTS[@]}"; do
+      printf "  %2d) %s\n" "$idx" "$cp"
+      idx=$((idx+1))
+    done
+    read -r -p "Enter checkpoint number to run: " num
+    if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 )) && (( num <= ${#CHECKPOINTS[@]} )); then
+      local sel="${CHECKPOINTS[$((num-1))]}"
+      echo ""
+      log_info "Running single checkpoint: $sel"
+      if run_checkpoint_by_name "$sel"; then
+        log_success "Checkpoint $sel completed."
+      else
+        log_warning "Checkpoint $sel reported a failure."
+      fi
+    else
+      log_warning "Invalid selection."
+    fi
+    ;;
+  3)
+    echo ""
+    log_info "Running system info/email script..."
+    run_INFO_SCRIPT
+    ;;
+  4|q|Q)
+    log_info "Quitting setup menu."
+    break
+    ;;
+  *)
+    log_warning "Unknown choice. Please enter 1, 2, 3, or 4."
+    ;;
+esac
   done
 }
 
@@ -917,6 +941,12 @@ echo "  Python requests: $PYTHON_PKGS_INSTALLED"
 echo ""
 
 run_neofetch_if_installed
+
+# Offer to run the info/email script before reboot
+echo ""
+if prompt_yn "Run system info/email script now? (y/n) [n]:" n; then
+  run_INFO_SCRIPT
+fi
 
 log_warning "Reboot recommended to finalize all changes!"
 echo ""
