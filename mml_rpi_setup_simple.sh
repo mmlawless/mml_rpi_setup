@@ -464,7 +464,7 @@ run_HOSTNAME() {
   rand1=$(tr -dc 'A-F0-9' </dev/urandom | head -c4 2>/dev/null || echo "ABCD")
   rand2=$(tr -dc 'A-F0-9' </dev/urandom | head -c3 2>/dev/null || echo "EFG")
 
-  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-${rand1}-${rand2}0x"
+  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-AAAA-BBB0x"
 
   # Safety check in case something weird happens
   if ! validate_hostname "$suggested_hostname"; then
