@@ -221,6 +221,54 @@ validate_cidr() {
   [[ "$prefix" =~ ^[0-9]+$ ]] && [ "$prefix" -ge 0 ] && [ "$prefix" -le 32 ]
 }
 
+get_pi_version() {
+  # Derive Pi "version" from the model string: 0,1,2,3,4,5
+  local model
+  if [ -f /proc/device-tree/model ]; then
+    model=$(tr -d '\0' < /proc/device-tree/model)
+  elif [ -f /etc/rpi-issue ]; then
+    model=$(head -n1 /etc/rpi-issue)
+  else
+    echo "0"
+    return
+  fi
+
+  case "$model" in
+    *"Raspberry Pi Zero"*) echo "0" ;;
+    *"Raspberry Pi 1"*)    echo "1" ;;
+    *"Raspberry Pi 2"*)    echo "2" ;;
+    *"Raspberry Pi 3"*)    echo "3" ;;
+    *"Raspberry Pi 4"*)    echo "4" ;;
+    *"Raspberry Pi 5"*)    echo "5" ;;
+    *)                     echo "0" ;;
+  esac
+}
+
+get_pi_serial() {
+  local serial="UNKNOWN"
+  if [ -f /sys/firmware/devicetree/base/serial-number ]; then
+    serial=$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)
+  else
+    serial=$(awk '/^Serial/ {print $3}' /proc/cpuinfo 2>/dev/null || echo "UNKNOWN")
+  fi
+  echo "$serial"
+}
+
+get_profile_code() {
+  # Map profile name -> 3-letter code
+  local profile="${1,,}"  # lowercase
+  case "$profile" in
+    web)    echo "WEB" ;;
+    iot)    echo "IOT" ;;
+    media)  echo "MED" ;;
+    dev)    echo "DEV" ;;
+    generic|"") echo "GEN" ;;
+    *)      echo "GEN" ;;
+  esac
+}
+
+
+
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 save_checkpoint() {
   # simple: record last checkpoint name (not used for control here, just info)
@@ -337,6 +385,7 @@ CHECKPOINTS=(
   START
   LOCALE
   DETECT
+  PROFILE
   HOSTNAME
   NETWORK
   SWAP
@@ -349,7 +398,6 @@ CHECKPOINTS=(
   EMAIL
   RASPI_CONFIG
   PYTHON
-  PROFILE
   ALIASES
   COMPLETE
 )
@@ -387,18 +435,63 @@ run_DETECT() {
 run_HOSTNAME() {
   local current_hostname
   current_hostname=$(hostname)
-  local input
-  read -r -p "Enter desired hostname (leave blank for current: $current_hostname): " input
-  local new_hostname="$current_hostname"
-  if [ -n "$input" ]; then
+
+  # Ensure a profile is selected (and available in STATE_FILE)
+  local profile=""
+  if [ -f "$STATE_FILE" ]; then
+    profile=$(grep '^PROFILE=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 | awk '{print $1}' || true)
+  fi
+
+  if [ -z "$profile" ]; then
+    log_info "Profile not set; running PROFILE checkpoint before generating hostname..."
+    run_PROFILE
+    if [ -f "$STATE_FILE" ]; then
+      profile=$(grep '^PROFILE=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 | awk '{print $1}' || true)
+    fi
+  fi
+
+  local profile_code
+  profile_code=$(get_profile_code "$profile")
+
+  local pi_version
+  pi_version=$(get_pi_version)
+
+  local serial
+  serial=$(get_pi_serial)
+
+  # Generate random hex sections for the trailing pattern XXXX-XXX0x
+  local rand1 rand2
+  rand1=$(tr -dc 'A-F0-9' </dev/urandom | head -c4 2>/dev/null || echo "ABCD")
+  rand2=$(tr -dc 'A-F0-9' </dev/urandom | head -c3 2>/dev/null || echo "EFG")
+
+  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-${rand1}-${rand2}0x"
+
+  # Safety check in case something weird happens
+  if ! validate_hostname "$suggested_hostname"; then
+    log_warning "Auto-generated hostname '$suggested_hostname' failed validation, falling back to current hostname."
+    suggested_hostname="$current_hostname"
+  fi
+
+  echo ""
+  log_info "Suggested hostname (based on Pi version, serial & profile):"
+  echo "  $suggested_hostname"
+  echo ""
+  read -r -p "Enter desired hostname (leave blank to use suggested, current: $current_hostname): " input
+
+  local new_hostname
+  if [ -z "$input" ]; then
+    new_hostname="$suggested_hostname"
+  else
     if validate_hostname "$input"; then
       new_hostname="$input"
     else
-      log_warning "Invalid hostname. Using current."
+      log_warning "Invalid hostname. Using suggested hostname instead."
+      new_hostname="$suggested_hostname"
     fi
   fi
+
   log_info "Setting hostname to $new_hostname"
-  
+
   if echo "$new_hostname" | sudo tee /etc/hostname >/dev/null && \
      sudo hostnamectl set-hostname "$new_hostname" 2>/dev/null; then
     log_success "Hostname set: $new_hostname"
@@ -655,7 +748,9 @@ run_PROFILE() {
   read -r -p "Select profile number [1]: " pnum
   pnum="${pnum:-1}"
   local profsel=${profiles[$((pnum-1))]}
-  log_info "Profile selected: $profsel"
+  local profcode
+  profcode=$(get_profile_code "$profsel")
+  log_info "Profile selected: $profsel (code: $profcode)"
   echo "PROFILE=${profsel}" > "$STATE_FILE"
   save_checkpoint "PROFILE"
 }
