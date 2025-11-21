@@ -246,11 +246,21 @@ get_pi_version() {
 
 get_pi_serial() {
   local serial="UNKNOWN"
+
   if [ -f /sys/firmware/devicetree/base/serial-number ]; then
     serial=$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)
   else
     serial=$(awk '/^Serial/ {print $3}' /proc/cpuinfo 2>/dev/null || echo "UNKNOWN")
   fi
+
+  # Remove **leading zeros**
+  serial="${serial##0}"
+
+  # If removing zeros resulted in empty string, fallback
+  if [ -z "$serial" ]; then
+    serial="UNKNOWN"
+  fi
+
   echo "$serial"
 }
 
