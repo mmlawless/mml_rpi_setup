@@ -324,7 +324,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-21c"
+SCRIPT_VERSION="2025-11-21d"
 STATE_FILE="$HOME/.rpi_setup_state"
 LOG_FILE="$HOME/.rpi_setup.log"
 LOCK_DIR="/tmp/rpi_setup.lock"
@@ -458,7 +458,7 @@ run_HOSTNAME() {
   serial=$(get_pi_serial)
 
   # === FIXED FORMAT (no randomness) ===
-  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-XXXX-XXX0x"
+  local suggested_hostname="LH-PI0x-${pi_version}-${serial}-${profile_code}-XXX0x"
 
   # Safety check
   if ! validate_hostname "$suggested_hostname"; then
