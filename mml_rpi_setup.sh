@@ -449,9 +449,11 @@ run_HOSTNAME() {
   local profile_code
   profile_code=$(get_profile_code "$profile")
 
+  # Pi model digit 0–5
   local pi_version
   pi_version=$(get_pi_version)
 
+  # Serial with leading zeros stripped
   local serial
   serial=$(get_pi_serial)
 
@@ -460,16 +462,18 @@ run_HOSTNAME() {
   rand1=$(tr -dc 'A-F0-9' </dev/urandom | head -c4 2>/dev/null || echo "ABCD")
   rand2=$(tr -dc 'A-F0-9' </dev/urandom | head -c3 2>/dev/null || echo "EFG")
 
-  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-AAAA-BBB0x"
+  # FINAL FORMAT:
+  # LH-PI0X-[MODEL_DIGIT]-[SERIAL_NO_LEADING_ZERO]-[PROFILE_CODE]-XXXX-XXX0x
+  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-${rand1}-${rand2}0x"
 
-  # Safety check in case something weird happens
+  # Safety check
   if ! validate_hostname "$suggested_hostname"; then
     log_warning "Auto-generated hostname '$suggested_hostname' failed validation, falling back to current hostname."
     suggested_hostname="$current_hostname"
   fi
 
   echo ""
-  log_info "Suggested hostname (based on Pi version, serial & profile):"
+  log_info "Suggested hostname (based on Pi model, serial & profile):"
   echo "  $suggested_hostname"
   echo ""
   read -r -p "Enter desired hostname (leave blank to use suggested, current: $current_hostname): " input
@@ -497,6 +501,7 @@ run_HOSTNAME() {
     return 1
   fi
 }
+
 
 run_NETWORK() {
   local iface
