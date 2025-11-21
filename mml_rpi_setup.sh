@@ -1,7 +1,9 @@
 #!/bin/bash
-# Universal Raspberry Pi Setup Script
+# MML Universal Raspberry Pi Setup Script (simple + menu)
 # Compatible with Legacy and Modern Raspberry Pi OS
-# Ignore SIGPIPE to prevent broken pipe errors
+# Single-file version intended for:
+#   bash <(curl -sSL https://raw.githubusercontent.com/mmlawless/mml_rpi_setup/main/mml_rpi_setup_simple.sh) --force
+
 trap '' PIPE
 
 # Also handle it for any child processes
@@ -12,12 +14,13 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # If the script is being piped (curl | bash), reattach stdin to the terminal
+# so interactive prompts (read -r -p ...) still work correctly.
 if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
   exec < /dev/tty
 fi
 
 ############################################################
-# Function definitions (all at top for pipe-to-bash)
+# Colours & logging
 ############################################################
 
 RED='\033[0;31m'
@@ -28,20 +31,36 @@ MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-trap '' PIPE
-
 log_info()     { echo -e "${BLUE}[INFO $(date +%H:%M:%S)]${NC} $1"; }
 log_success()  { echo -e "${GREEN}[SUCCESS $(date +%H:%M:%S)]${NC} $1"; }
 log_warning()  { echo -e "${YELLOW}[WARNING $(date +%H:%M:%S)]${NC} $1"; }
 log_error()    { echo -e "${RED}[ERROR $(date +%H:%M:%S)]${NC} $1" >&2; }
 log_progress() { echo -e "${CYAN}[PROGRESS $(date +%H:%M:%S)]${NC} $1"; }
-log_temp()     { echo -e "${MAGENTA}[TEMP $(date +%H:%M:%S)]${NC} $1"; }
 log_debug()    { [ "${DEBUG:-0}" -eq 1 ] && echo -e "[DEBUG $(date +%H:%M:%S)] $1" || true; }
 
-# --- System Detection Functions ---
+############################################################
+# Argument parsing (e.g. --force)
+############################################################
+
+FORCE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)
+      FORCE=1
+      shift
+      ;;
+    *)
+      log_warning "Unknown argument: $1"
+      shift
+      ;;
+  esac
+done
+
+############################################################
+# Detection & utilities
+############################################################
+
 detect_boot_config_path() {
-  # Modern Raspberry Pi OS (Bookworm+) uses /boot/firmware/config.txt
-  # Legacy uses /boot/config.txt
   if [ -f "/boot/firmware/config.txt" ]; then
     echo "/boot/firmware/config.txt"
   elif [ -f "/boot/config.txt" ]; then
@@ -64,7 +83,6 @@ detect_boot_cmdline_path() {
 }
 
 detect_dhcpcd_config() {
-  # Check if using dhcpcd or NetworkManager
   if systemctl is-active --quiet dhcpcd 2>/dev/null; then
     echo "dhcpcd"
   elif systemctl is-active --quiet NetworkManager 2>/dev/null; then
@@ -75,7 +93,6 @@ detect_dhcpcd_config() {
 }
 
 detect_os_version() {
-  # Detect OS version for compatibility
   if [ -f /etc/os-release ]; then
     # shellcheck disable=SC1091
     source /etc/os-release
@@ -90,9 +107,13 @@ check_system_compatibility() {
   
   # Check if running on Raspberry Pi
   if [ ! -f /proc/device-tree/model ] && [ ! -f /etc/rpi-issue ]; then
-    log_warning "This doesn't appear to be a Raspberry Pi"
-    read -r -p "Continue anyway? (y/n) [n]: " ans
-    [[ "${ans,,}" != "y" ]] && exit 1
+    if [[ "$FORCE" -eq 1 ]]; then
+      log_warning "This doesn't appear to be a Raspberry Pi, but --force is set. Continuing anyway."
+    else
+      log_warning "This doesn't appear to be a Raspberry Pi"
+      read -r -p "Continue anyway? (y/n) [n]: " ans
+      [[ "${ans,,}" != "y" ]] && exit 1
+    fi
   fi
   
   # Check if running as root
@@ -122,7 +143,6 @@ check_system_compatibility() {
   log_info "OS version: $OS_VERSION"
 }
 
-# --- Utility Functions ---
 install_packages() {
   local package_list=("$@")
   [ ${#package_list[@]} -eq 0 ] && return 0
@@ -131,7 +151,7 @@ install_packages() {
   local max_retries=3
   local attempt=1
   while [ $attempt -le $max_retries ]; do
-    if sudo apt-get install -y "${package_list[@]}" 2>&1 | tee -a "$LOG_FILE"; then
+    if sudo apt-get install -y "${package_list[@]}" 2>&1; then
       log_success "Packages installed"
       return 0
     fi
@@ -201,41 +221,59 @@ validate_cidr() {
   [[ "$prefix" =~ ^[0-9]+$ ]] && [ "$prefix" -ge 0 ] && [ "$prefix" -le 32 ]
 }
 
+get_pi_version() {
+  # Derive Pi "version" from the model string: 0,1,2,3,4,5
+  local model
+  if [ -f /proc/device-tree/model ]; then
+    model=$(tr -d '\0' < /proc/device-tree/model)
+  elif [ -f /etc/rpi-issue ]; then
+    model=$(head -n1 /etc/rpi-issue)
+  else
+    echo "0"
+    return
+  fi
+
+  case "$model" in
+    *"Raspberry Pi Zero"*) echo "0" ;;
+    *"Raspberry Pi 1"*)    echo "1" ;;
+    *"Raspberry Pi 2"*)    echo "2" ;;
+    *"Raspberry Pi 3"*)    echo "3" ;;
+    *"Raspberry Pi 4"*)    echo "4" ;;
+    *"Raspberry Pi 5"*)    echo "5" ;;
+    *)                     echo "0" ;;
+  esac
+}
+
+get_pi_serial() {
+  local serial="UNKNOWN"
+  if [ -f /sys/firmware/devicetree/base/serial-number ]; then
+    serial=$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)
+  else
+    serial=$(awk '/^Serial/ {print $3}' /proc/cpuinfo 2>/dev/null || echo "UNKNOWN")
+  fi
+  echo "$serial"
+}
+
+get_profile_code() {
+  # Map profile name -> 3-letter code
+  local profile="${1,,}"  # lowercase
+  case "$profile" in
+    web)    echo "WEB" ;;
+    iot)    echo "IOT" ;;
+    media)  echo "MED" ;;
+    dev)    echo "DEV" ;;
+    generic|"") echo "GEN" ;;
+    *)      echo "GEN" ;;
+  esac
+}
+
+
+
+CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 save_checkpoint() {
+  # simple: record last checkpoint name (not used for control here, just info)
   atomic_write "$CHECKPOINT_FILE" "$1" 600
   log_progress "Checkpoint saved: $1"
-}
-
-load_checkpoint() {
-  [ -f "$CHECKPOINT_FILE" ] && cat "$CHECKPOINT_FILE" || echo "START"
-}
-
-clear_checkpoint() {
-  rm -f "$CHECKPOINT_FILE"
-  log_debug "Checkpoint cleared"
-}
-
-is_checkpoint_passed() {
-  local checkpoint="$1"
-  local current
-  current=$(load_checkpoint)
-  local -a checkpoints=(
-    START LOCALE DETECT HOSTNAME NETWORK SWAP
-    UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT
-    EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE
-  )
-  [ "$current" = "COMPLETE" ] && return 0
-  local current_idx=-1
-  local check_idx=-1
-  for i in "${!checkpoints[@]}"; do
-    [ "${checkpoints[$i]}" = "$current" ] && current_idx=$i
-    [ "${checkpoints[$i]}" = "$checkpoint" ] && check_idx=$i
-  done
-  [ $check_idx -eq -1 ] && return 1
-  [ $current_idx -eq -1 ] && return 1
-  # Return 0 (true) when checkpoint is passed
-  [ $current_idx -ge $check_idx ] && return 0
-  return 1
 }
 
 prompt_feature_toggle() {
@@ -292,9 +330,8 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-18b"
+SCRIPT_VERSION="2025-11-20"
 STATE_FILE="$HOME/.rpi_setup_state"
-CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
 LOG_FILE="$HOME/.rpi_setup.log"
 LOCK_DIR="/tmp/rpi_setup.lock"
 DRY_RUN=0
@@ -311,7 +348,7 @@ cat <<EOF
 ╔══════════════════════════════════════════════════════╗
 ║  MML Universal Raspberry Pi Setup Script             ║
 ║                                                      ║
-║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 9)) "")║
+║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 16)) "")║
 ╚══════════════════════════════════════════════════════╝
 EOF
 
@@ -341,127 +378,32 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 check_system_compatibility
 
 ############################################################
-# Checkpoint names and completed status helpers
+# Checkpoints
 ############################################################
-CHECKPOINTS=(START LOCALE DETECT HOSTNAME NETWORK SWAP UPDATE UPGRADE ESSENTIAL SECURITY VNC GIT EMAIL RASPI_CONFIG PYTHON PROFILE ALIASES COMPLETE)
-CHECKPOINTS_TOTAL=${#CHECKPOINTS[@]}
 
-# --- Status Queries for Menu ---
-get_current_status() {
-  declare -A status
-  status["SPI"]="$(grep -q '^dtparam=spi=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")"
-  status["I2C"]="$(grep -q '^dtparam=i2c_arm=on' "$BOOT_CONFIG" 2>/dev/null && echo "enabled" || echo "disabled")"
-  status["CAMERA"]="$(vcgencmd get_camera 2>/dev/null | grep -q 'supported=1 detected=1' && echo "enabled" || echo "disabled")"
-  status["SWAP"]="$(free -m | awk '/^Swap:/ {print ($2 >= 1024 ? "enabled" : "disabled") }')"
-  status["UFW"]="$(sudo ufw status 2>/dev/null | grep -qw "active" && echo "enabled" || echo "disabled")"
-  status["VNC"]="$(systemctl is-enabled vncserver-x11-serviced.service 2>/dev/null | grep -q enabled && echo "enabled" || echo "disabled")"
-  status["GIT_USER"]="$(git config --global user.name 2>/dev/null || echo "not set")"
-  status["GIT_EMAIL"]="$(git config --global user.email 2>/dev/null || echo "not set")"
-  status["REQUESTS"]="$(pip3 list 2>/dev/null | grep -qw requests && echo "installed" || echo "not installed")"
-  status["HOSTNAME"]="$(hostname)"
-  status["PROFILE"]="$(grep PROFILE= $STATE_FILE 2>/dev/null | cut -d= -f2 | grep -oE '[^ ]+' || echo "not set")"
-  echo "${status[@]}"
-}
-
-get_checkpoint_status_array() {
-  local last
-  last=$(load_checkpoint)
-  local last_index=-1
-  local out=()
-  for i in "${!CHECKPOINTS[@]}"; do
-    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then last_index=$i; fi
-  done
-  for i in "${!CHECKPOINTS[@]}"; do
-    if [[ $i -le $last_index ]]; then
-      out+=("completed")
-    else
-      out+=("incomplete")
-    fi
-  done
-  echo "${out[@]}"
-}
-
-is_any_incomplete() {
-  local last
-  last=$(load_checkpoint)
-  local last_index=-1
-  for i in "${!CHECKPOINTS[@]}"; do
-    if [[ "${CHECKPOINTS[$i]}" == "$last" ]]; then last_index=$i; fi
-  done
-  if [[ $last_index -eq $((CHECKPOINTS_TOTAL - 1)) ]]; then
-    return 1
-  else
-    return 0
-  fi
-}
-
-draw_menu() {
-  # shellcheck disable=SC2207
-  local status_arr=($(get_checkpoint_status_array))
-  # shellcheck disable=SC2207
-  IFS=' ' read -r spi i2c cam swp ufw vnc gituser gitemail requests hname prof <<< "$(get_current_status)"
-  echo ""
-  echo -e "${CYAN}Checkpoint Progress:${NC}"
-  for i in "${!CHECKPOINTS[@]}"; do
-    item="${CHECKPOINTS[$i]}"
-    stat="${status_arr[$i]}"
-    color=$([[ "$stat" == "completed" ]] && echo "$GREEN" || echo "$RED")
-    extra=""
-    case "$item" in
-      "SPI")        extra="Status: $spi" ;;
-      "I2C")        extra="Status: $i2c" ;;
-      "CAMERA")     extra="Status: $cam" ;;
-      "SWAP")       extra="Status: $swp" ;;
-      "SECURITY")   extra="UFW: $ufw" ;;
-      "VNC")        extra="Status: $vnc" ;;
-      "GIT")        extra="User: $gituser, Email: $gitemail" ;;
-      "PYTHON")     extra="requests: $requests" ;;
-      "HOSTNAME")   extra="Current: $hname" ;;
-      "PROFILE")    extra="Profile: $prof" ;;
-    esac
-    printf "%s%2d) %-14s [%s]%s %s\n" "$color" $((i+1)) "$item" "$stat" "$NC" "$extra"
-  done
-  echo ""
-}
-
-choose_checkpoint() {
-  draw_menu
-  echo -e "${CYAN}Menu options:${NC}"
-  echo "  r = Run the next incomplete checkpoint"
-  echo "  a = Run all remaining checkpoints"
-  echo "  c = Choose a specific checkpoint by number"
-  echo "  q = Quit the setup script"
-  echo ""
-  is_any_incomplete
-  local incomplete="$?"
-  if [[ $incomplete -ne 0 ]]; then
-    echo -e "${GREEN}All checkpoints completed. Choose 'c' to re-run/config any step or 'q' to exit.${NC}"
-  fi
-
-  while true; do
-    read -r -p "Your choice [r/a/c/q]: " action
-    action="${action,,}"
-    # Trim trailing CR/LF/space/tab to avoid hidden chars
-    action="${action%%[$'\r\n\t ']*}"
-
-    if [[ -z "$action" ]]; then
-      action="r"
-    fi
-
-    case "$action" in
-      r|a|c|q)
-        echo "$action"
-        return 0
-        ;;
-      *)
-        log_warning "Unknown menu choice '$action'. Please enter r, a, c, or q."
-        ;;
-    esac
-  done
-}
+CHECKPOINTS=(
+  START
+  LOCALE
+  DETECT
+  PROFILE
+  HOSTNAME
+  NETWORK
+  SWAP
+  UPDATE
+  UPGRADE
+  ESSENTIAL
+  SECURITY
+  VNC
+  GIT
+  EMAIL
+  RASPI_CONFIG
+  PYTHON
+  ALIASES
+  COMPLETE
+)
 
 ############################################################
-# Individual checkpoint logic as separate functions
+# Individual checkpoint logic
 ############################################################
 
 run_START() {
@@ -485,7 +427,6 @@ run_LOCALE() {
 run_DETECT() {
   log_info "Hardware detection complete"
   if [ -f /proc/device-tree/model ]; then
-    echo -n ""
     log_info "Model: $(tr -d '\0' < /proc/device-tree/model)"
   fi
   save_checkpoint "DETECT"
@@ -494,18 +435,63 @@ run_DETECT() {
 run_HOSTNAME() {
   local current_hostname
   current_hostname=$(hostname)
-  local input
-  read -r -p "Enter desired hostname (leave blank for current: $current_hostname): " input
-  local new_hostname="$current_hostname"
-  if [ -n "$input" ]; then
+
+  # Ensure a profile is selected (and available in STATE_FILE)
+  local profile=""
+  if [ -f "$STATE_FILE" ]; then
+    profile=$(grep '^PROFILE=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 | awk '{print $1}' || true)
+  fi
+
+  if [ -z "$profile" ]; then
+    log_info "Profile not set; running PROFILE checkpoint before generating hostname..."
+    run_PROFILE
+    if [ -f "$STATE_FILE" ]; then
+      profile=$(grep '^PROFILE=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 | awk '{print $1}' || true)
+    fi
+  fi
+
+  local profile_code
+  profile_code=$(get_profile_code "$profile")
+
+  local pi_version
+  pi_version=$(get_pi_version)
+
+  local serial
+  serial=$(get_pi_serial)
+
+  # Generate random hex sections for the trailing pattern XXXX-XXX0x
+  local rand1 rand2
+  rand1=$(tr -dc 'A-F0-9' </dev/urandom | head -c4 2>/dev/null || echo "ABCD")
+  rand2=$(tr -dc 'A-F0-9' </dev/urandom | head -c3 2>/dev/null || echo "EFG")
+
+  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-AAAA-BBB0x"
+
+  # Safety check in case something weird happens
+  if ! validate_hostname "$suggested_hostname"; then
+    log_warning "Auto-generated hostname '$suggested_hostname' failed validation, falling back to current hostname."
+    suggested_hostname="$current_hostname"
+  fi
+
+  echo ""
+  log_info "Suggested hostname (based on Pi version, serial & profile):"
+  echo "  $suggested_hostname"
+  echo ""
+  read -r -p "Enter desired hostname (leave blank to use suggested, current: $current_hostname): " input
+
+  local new_hostname
+  if [ -z "$input" ]; then
+    new_hostname="$suggested_hostname"
+  else
     if validate_hostname "$input"; then
       new_hostname="$input"
     else
-      log_warning "Invalid hostname. Using current."
+      log_warning "Invalid hostname. Using suggested hostname instead."
+      new_hostname="$suggested_hostname"
     fi
   fi
+
   log_info "Setting hostname to $new_hostname"
-  
+
   if echo "$new_hostname" | sudo tee /etc/hostname >/dev/null && \
      sudo hostnamectl set-hostname "$new_hostname" 2>/dev/null; then
     log_success "Hostname set: $new_hostname"
@@ -520,7 +506,6 @@ run_NETWORK() {
   local iface
   read -r -p "Configure static network interface? (enter iface, blank=skip): " iface
   if [[ -n "$iface" ]]; then
-    # Check if interface exists
     if ! ip link show "$iface" >/dev/null 2>&1; then
       log_error "Interface $iface does not exist"
       local available
@@ -763,7 +748,9 @@ run_PROFILE() {
   read -r -p "Select profile number [1]: " pnum
   pnum="${pnum:-1}"
   local profsel=${profiles[$((pnum-1))]}
-  log_info "Profile selected: $profsel"
+  local profcode
+  profcode=$(get_profile_code "$profsel")
+  log_info "Profile selected: $profsel (code: $profcode)"
   echo "PROFILE=${profsel}" > "$STATE_FILE"
   save_checkpoint "PROFILE"
 }
@@ -787,6 +774,24 @@ BASHEOF
   fi
   log_success "Custom aliases and directories created"
   save_checkpoint "ALIASES"
+}
+
+run_INFO_SCRIPT() {
+  local email
+
+  echo ""
+  read -r -p "Enter email for system info report [mmlawlessuk@gmail.com]: " email
+  email="${email:-mmlawlessuk@gmail.com}"
+
+  log_info "Running mml_rpi_info.sh for $email"
+
+  # Run the remote script; handle success/failure without killing this script
+  if curl -fsSL https://raw.githubusercontent.com/mmlawless/mml_rpi_info/main/mml_rpi_info.sh \
+    | bash -s -- --email "$email"; then
+    log_success "System info/email script completed successfully."
+  else
+    log_error "System info/email script failed. Please check your network or URL."
+  fi
 }
 
 run_COMPLETE() {
@@ -820,75 +825,76 @@ run_checkpoint_by_name() {
 }
 
 ##########################################################
-# Main process: menu-driven checkpoint selection loop
+# Menu-driven main loop
 ##########################################################
-first_checkpoint=$(load_checkpoint)
-first_index=0
-for i in "${!CHECKPOINTS[@]}"; do
-  if [[ "${CHECKPOINTS[$i]}" == "$first_checkpoint" ]]; then
-    first_index=$i
-    break
-  fi
-done
 
-if [[ "$first_checkpoint" == "START" ]]; then
-  log_info "No checkpoints previously completed; running setup from scratch."
-  for ((i=0; i<CHECKPOINTS_TOTAL; i++)); do
-    run_checkpoint_by_name "${CHECKPOINTS[$i]}"
-  done
-  finished="1"
-else
-  finished="0"
-fi
+main_menu() {
+  while true; do
+    echo ""
+    echo "================ Setup Menu ================"
+echo "1) Run ALL checkpoints (full setup)"
+echo "2) Run a SINGLE checkpoint"
+echo "3) Run system info/email script (mml_rpi_info)"
+echo "4) Quit"
+echo "==========================================="
+read -r -p "Select an option [1/2/3/4]: " choice
+choice="${choice%%[$'\r\n\t ']*}"
 
-while [[ "$finished" != "1" ]]; do
-  is_any_incomplete
-  incomplete="$?"
-  if [[ $incomplete -ne 0 ]]; then
-    echo -e "${GREEN}All checkpoints have already been completed.${NC}"
-    break
-  fi
-
-  choice=$(choose_checkpoint)
-  case "$choice" in
-    "r")
-      # shellcheck disable=SC2207
-      statuses=($(get_checkpoint_status_array))
-      for i in "${!CHECKPOINTS[@]}"; do
-        if [[ "${statuses[$i]}" == "incomplete" ]]; then
-          run_checkpoint_by_name "${CHECKPOINTS[$i]}"
-          break
-        fi
-      done
-      ;;
-    "a")
-      # shellcheck disable=SC2207
-      statuses=($(get_checkpoint_status_array))
-      for i in "${!CHECKPOINTS[@]}"; do
-        if [[ "${statuses[$i]}" == "incomplete" ]]; then
-          run_checkpoint_by_name "${CHECKPOINTS[$i]}"
-        fi
-      done
-      finished="1"
-      ;;
-    "c")
-      read -r -p "Enter checkpoint number to run: " num
-      if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 )) && (( num <= CHECKPOINTS_TOTAL )); then
-        run_checkpoint_by_name "${CHECKPOINTS[$((num-1))]}"
+case "$choice" in
+  1|"")
+    # Run all checkpoints in order
+    echo ""
+    log_info "Running ALL checkpoints..."
+    for cp in "${CHECKPOINTS[@]}"; do
+      echo ""
+      log_info ">>> Running checkpoint: $cp"
+      if run_checkpoint_by_name "$cp"; then
+        log_success "Checkpoint $cp completed."
       else
-        log_warning "Invalid selection."
+        log_warning "Checkpoint $cp reported a failure; continuing."
       fi
-      ;;
-    "q")
-      log_info "Quitting setup script."
-      finished="1"
-      ;;
-    *)
-      # This should never be reached now, but kept as a safety net
-      log_warning "Unknown menu choice."
-      ;;
-  esac
-done
+    done
+    break
+    ;;
+  2)
+    echo ""
+    echo "Available checkpoints:"
+    local idx=1
+    for cp in "${CHECKPOINTS[@]}"; do
+      printf "  %2d) %s\n" "$idx" "$cp"
+      idx=$((idx+1))
+    done
+    read -r -p "Enter checkpoint number to run: " num
+    if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 )) && (( num <= ${#CHECKPOINTS[@]} )); then
+      local sel="${CHECKPOINTS[$((num-1))]}"
+      echo ""
+      log_info "Running single checkpoint: $sel"
+      if run_checkpoint_by_name "$sel"; then
+        log_success "Checkpoint $sel completed."
+      else
+        log_warning "Checkpoint $sel reported a failure."
+      fi
+    else
+      log_warning "Invalid selection."
+    fi
+    ;;
+  3)
+    echo ""
+    log_info "Running system info/email script..."
+    run_INFO_SCRIPT
+    ;;
+  4|q|Q)
+    log_info "Quitting setup menu."
+    break
+    ;;
+  *)
+    log_warning "Unknown choice. Please enter 1, 2, 3, or 4."
+    ;;
+esac
+  done
+}
+
+main_menu
 
 ############################################################
 # Summary and reboot prompt
@@ -909,14 +915,14 @@ HOSTNAME_DISPLAY="$(hostname)"
 
 echo ""
 echo "=========================================="
-log_success "Setup completed successfully!"
+log_success "Setup run completed!"
 echo "=========================================="
 echo ""
 echo "System Information:"
 if [ -f /proc/device-tree/model ]; then
   echo "  Model: $(tr -d '\0' < /proc/device-tree/model)"
 fi
-echo "  OS: $(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
+echo "  OS: $(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '\"')"
 echo "  Kernel: $(uname -r)"
 echo "  Boot Config: $BOOT_CONFIG"
 echo "  Network Manager: $NETWORK_MANAGER"
@@ -924,7 +930,7 @@ echo ""
 echo "Configuration:"
 echo "  Hostname: $HOSTNAME_DISPLAY"
 echo "  Profile: $PROFILE_STATUS"
-echo "  Swap: $SWAP_STATE ($CURRENT_SWAP MB)"
+echo "  Swap: $SWAP_STATE (${CURRENT_SWAP:-0} MB)"
 echo "  SPI: $SPI_STATE"
 echo "  I2C: $I2C_STATE"
 echo "  Camera: $CAMERA_STATE"
@@ -936,9 +942,15 @@ echo ""
 
 run_neofetch_if_installed
 
-log_warning "Reboot required to finalize all changes!"
+# Offer to run the info/email script before reboot
 echo ""
-if prompt_yn "Reboot now? (y/n): " n; then
+if prompt_yn "Run system info/email script now? (y/n) [n]:" n; then
+  run_INFO_SCRIPT
+fi
+
+log_warning "Reboot recommended to finalize all changes!"
+echo ""
+if prompt_yn "Reboot now? (y/n) [n]:" n; then
   log_info "Rebooting in 5 seconds... (Ctrl+C to cancel)"
   sleep 5
   sudo reboot
