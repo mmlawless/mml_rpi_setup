@@ -246,25 +246,22 @@ get_pi_version() {
 
 get_pi_serial() {
   local serial="UNKNOWN"
+
   if [ -f /sys/firmware/devicetree/base/serial-number ]; then
     serial=$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)
   else
     serial=$(awk '/^Serial/ {print $3}' /proc/cpuinfo 2>/dev/null || echo "UNKNOWN")
   fi
-  echo "$serial"
-}
 
-get_profile_code() {
-  # Map profile name -> 3-letter code
-  local profile="${1,,}"  # lowercase
-  case "$profile" in
-    web)    echo "WEB" ;;
-    iot)    echo "IOT" ;;
-    media)  echo "MED" ;;
-    dev)    echo "DEV" ;;
-    generic|"") echo "GEN" ;;
-    *)      echo "GEN" ;;
-  esac
+  # Remove **leading zeros**
+  serial="${serial##0}"
+
+  # If removing zeros resulted in empty string, fallback
+  if [ -z "$serial" ]; then
+    serial="UNKNOWN"
+  fi
+
+  echo "$serial"
 }
 
 
