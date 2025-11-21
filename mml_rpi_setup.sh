@@ -345,8 +345,10 @@ cat <<EOF
 ╔══════════════════════════════════════════════════════╗
 ║  MML Universal Raspberry Pi Setup Script             ║
 ║                                                      ║
-║  Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 16)) "")║
 ╚══════════════════════════════════════════════════════╝
+
+Version: $SCRIPT_VERSION$(printf "%*s" $((46 - ${#SCRIPT_VERSION} - 16)) "")
+
 EOF
 
 run_neofetch_if_installed
