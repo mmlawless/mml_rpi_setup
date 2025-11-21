@@ -222,8 +222,8 @@ validate_cidr() {
 }
 
 get_pi_version() {
-  # Derive Pi "version" from the model string: 0,1,2,3,4,5
   local model
+
   if [ -f /proc/device-tree/model ]; then
     model=$(tr -d '\0' < /proc/device-tree/model)
   elif [ -f /etc/rpi-issue ]; then
@@ -253,17 +253,14 @@ get_pi_serial() {
     serial=$(awk '/^Serial/ {print $3}' /proc/cpuinfo 2>/dev/null || echo "UNKNOWN")
   fi
 
-  # Remove **leading zeros**
-  serial="${serial##0}"
+  # Strip leading zeros from the serial
+  serial=$(echo "$serial" | sed 's/^0*//')
 
-  # If removing zeros resulted in empty string, fallback
-  if [ -z "$serial" ]; then
-    serial="UNKNOWN"
-  fi
+  # If everything was zeros, keep a single "0"
+  [ -z "$serial" ] && serial="0"
 
   echo "$serial"
 }
-
 
 
 CHECKPOINT_FILE="$HOME/.rpi_setup_checkpoint"
