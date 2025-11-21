@@ -330,7 +330,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-20"
+SCRIPT_VERSION="2025-11-21"
 STATE_FILE="$HOME/.rpi_setup_state"
 LOG_FILE="$HOME/.rpi_setup.log"
 LOCK_DIR="/tmp/rpi_setup.lock"
