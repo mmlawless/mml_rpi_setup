@@ -324,7 +324,7 @@ run_neofetch_if_installed() {
 # Script variables/state and header banner
 ############################################################
 
-SCRIPT_VERSION="2025-11-21b"
+SCRIPT_VERSION="2025-11-21c"
 STATE_FILE="$HOME/.rpi_setup_state"
 LOG_FILE="$HOME/.rpi_setup.log"
 LOCK_DIR="/tmp/rpi_setup.lock"
@@ -453,27 +453,21 @@ run_HOSTNAME() {
   local pi_version
   pi_version=$(get_pi_version)
 
-  # Serial with leading zeros stripped
+  # Serial with leading zeros removed
   local serial
   serial=$(get_pi_serial)
 
-  # Generate random hex sections for the trailing pattern XXXX-XXX0x
-  local rand1 rand2
-  rand1=$(tr -dc 'A-F0-9' </dev/urandom | head -c4 2>/dev/null || echo "ABCD")
-  rand2=$(tr -dc 'A-F0-9' </dev/urandom | head -c3 2>/dev/null || echo "EFG")
-
-  # FINAL FORMAT:
-  # LH-PI0X-[MODEL_DIGIT]-[SERIAL_NO_LEADING_ZERO]-[PROFILE_CODE]-XXXX-XXX0x
-  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-${rand1}-${rand2}0x"
+  # === FIXED FORMAT (no randomness) ===
+  local suggested_hostname="LH-PI0X-${pi_version}-${serial}-${profile_code}-XXXX-XXX0x"
 
   # Safety check
   if ! validate_hostname "$suggested_hostname"; then
-    log_warning "Auto-generated hostname '$suggested_hostname' failed validation, falling back to current hostname."
+    log_warning "Auto-generated hostname '$suggested_hostname' failed validation, using current."
     suggested_hostname="$current_hostname"
   fi
 
   echo ""
-  log_info "Suggested hostname (based on Pi model, serial & profile):"
+  log_info "Suggested hostname:"
   echo "  $suggested_hostname"
   echo ""
   read -r -p "Enter desired hostname (leave blank to use suggested, current: $current_hostname): " input
