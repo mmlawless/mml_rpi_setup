@@ -458,7 +458,7 @@ run_HOSTNAME() {
   serial=$(get_pi_serial)
 
   # === FIXED FORMAT (no randomness) ===
-  local suggested_hostname="LH-PI0x-${pi_version}-${serial}-${profile_code}-XXX0x"
+  local suggested_hostname="LH-PI0x-${pi_version}-${serial}-${profile_code}-XXXX1"
 
   # Safety check
   if ! validate_hostname "$suggested_hostname"; then
